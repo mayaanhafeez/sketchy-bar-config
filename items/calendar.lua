@@ -6,8 +6,8 @@ local spacer_before = sbar.add("item", { position = "right", width = settings.gr
 local cal = sbar.add("item", {
   icon = {
     color = colors.white,
-    width = 90,
     padding_left = 8,
+    padding_right = 6,
     font = {
       family = settings.font.numbers,
       style = settings.font.style_map["Regular"],
@@ -17,8 +17,6 @@ local cal = sbar.add("item", {
   label = {
     color = colors.white,
     padding_right = 8,
-    width = 75,
-    align = "right",
     font = { family = settings.font.numbers, style = settings.font.style_map["Regular"], size = 13.0 },
   },
   position = "right",
