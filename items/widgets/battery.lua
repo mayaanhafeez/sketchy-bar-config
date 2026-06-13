@@ -43,6 +43,20 @@ local remaining_time = sbar.add("item", {
   },
 })
 
+local battery_icons = {
+  "󰂎", -- 0–9%
+  "󰁺", -- 10–19%
+  "󰁻", -- 20–29%
+  "󰁼", -- 30–39%
+  "󰁽", -- 40–49%
+  "󰁾", -- 50–59%
+  "󰁿", -- 60–69%
+  "󰂀", -- 70–79%
+  "󰂁", -- 80–89%
+  "󰂂", -- 90–99%
+  "󰁹", -- 100%
+}
+
 battery:subscribe({"routine", "power_source_change", "system_woke"}, function()
   sbar.exec("pmset -g batt", function(batt_info)
     local icon = "!"
@@ -52,27 +66,13 @@ battery:subscribe({"routine", "power_source_change", "system_woke"}, function()
     if found then
       charge = tonumber(charge)
       label = charge .. "%"
+      local idx = math.min(math.floor(charge / 10) + 1, 11)
+      icon = battery_icons[idx]
     end
 
-    local color = colors.foam
-    local charging, _, _ = batt_info:find("AC Power")
-
+    local charging = batt_info:find("AC Power")
     if charging then
-      icon = icons.battery.charging
-    else
-      if found and charge > 80 then
-        icon = icons.battery._100
-      elseif found and charge > 60 then
-        icon = icons.battery._75
-      elseif found and charge > 40 then
-        icon = icons.battery._50
-      elseif found and charge > 20 then
-        icon = icons.battery._25
-        color = colors.gold
-      else
-        icon = icons.battery._0
-        color = colors.red
-      end
+      icon = icon .. " 󱐋"
     end
 
     local lead = ""
@@ -80,7 +80,7 @@ battery:subscribe({"routine", "power_source_change", "system_woke"}, function()
       lead = "0"
     end
 
-    battery:set({ icon = { string = icon, color = color } })
+    battery:set({ icon = { string = icon, color = colors.text } })
     battery_pct:set({ label = { string = lead .. label } })
   end)
 end)
@@ -100,5 +100,5 @@ end)
 
 sbar.add("item", "widgets.battery.padding", {
   position = "right",
-  width = settings.group_paddings
+  width = 2
 })

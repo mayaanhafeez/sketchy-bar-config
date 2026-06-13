@@ -26,7 +26,7 @@ local cal = sbar.add("item", {
   click_script = "open -a 'Calendar'"
 })
 
-local spacer_after = sbar.add("item", { position = "right", width = settings.group_paddings })
+local spacer_after = sbar.add("item", { position = "right", width = 2 })
 
 local function update_position()
   sbar.exec("system_profiler SPDisplaysDataType 2>/dev/null | grep -c 'Resolution:'", function(output)
