@@ -1,4 +1,6 @@
 return {
+  theme = "catppuccin_mocha", -- available: rose_pine, catppuccin_mocha
+
   paddings = 3,
   group_paddings = 5,
 
