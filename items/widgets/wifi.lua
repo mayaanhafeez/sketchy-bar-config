@@ -22,5 +22,5 @@ wifi:subscribe({"wifi_change", "system_woke"}, function(env)
 end)
 
 wifi:subscribe("mouse.clicked", function()
-  sbar.exec("open 'x-apple.systempreferences:com.apple.wifi'")
+  sbar.exec("/opt/homebrew/bin/hyprspace open-terminal Terminal.app \"$CONFIG_DIR/helpers/macwifi.command\" position center")
 end)
