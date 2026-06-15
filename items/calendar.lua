@@ -29,9 +29,8 @@ local cal = sbar.add("item", {
 local spacer_after = sbar.add("item", { position = "right", width = 2 })
 
 local function update_position()
-  sbar.exec("system_profiler SPDisplaysDataType 2>/dev/null | grep -c 'Resolution:'", function(output)
-    local count = tonumber(output) or 1
-    if count >= 2 then
+  sbar.exec("system_profiler SPDisplaysDataType 2>/dev/null | awk '/Resolution:/{t++} /Built-in.*Display/{b++} END{if(t==b){print \"internal\"}else{print \"external\"}}'", function(output)
+    if output:match("external") then
       cal:set({ position = "center" })
       spacer_before:set({ drawing = false })
       spacer_after:set({ drawing = false })
