@@ -8,8 +8,10 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 W=1100
 H=740
 
-# Logical screen size (points). Falls back to a sane default if Finder query fails.
-read -r SW SH < <(osascript -e 'tell application "Finder" to get bounds of window of desktop' 2>/dev/null | awk -F', ' '{print $3, $4}')
+# Primary display size in logical points (the one with the menu bar). Using the
+# primary display only ensures we center on it rather than across the combined
+# bounding box of all connected screens. Falls back to a sane default on failure.
+read -r SW SH < <(osascript -l JavaScript -e 'ObjC.import("AppKit"); var s=$.NSScreen.screens.objectAtIndex(0).frame; s.size.width + " " + s.size.height' 2>/dev/null)
 [ -z "$SW" ] && SW=1280
 [ -z "$SH" ] && SH=832
 
