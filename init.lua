@@ -11,6 +11,11 @@ require("default")
 require("items")
 sbar.end_config()
 
+-- Coordinate sketchybar with the native macOS menu bar: hide sketchybar when
+-- the cursor reaches the top of the screen so the menu bar can take over.
+-- (https://github.com/malpern/sketchybar-toggle)
+sbar.exec("pkill -x sketchybar-toggle; sketchybar-toggle &")
+
 -- Run the event loop of the sketchybar module (without this there will be no
 -- callback functions executed in the lua module)
 sbar.event_loop()
