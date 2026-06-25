@@ -2,7 +2,7 @@ local colors = require("colors")
 local settings = require("settings")
 
 local hyprspace = os.getenv("HYPRSPACE_BIN") or "/opt/homebrew/bin/hyprspace"
-local workspace_ids = { "1", "2", "3", "4", "S", "W" }
+local workspace_ids = { "1", "2", "3", "4", "5"}
 
 sbar.add("event", "hyprspace_workspace_change")
 

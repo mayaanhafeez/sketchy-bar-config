@@ -8,5 +8,5 @@ local cpu = sbar.add("item", "widgets.cpu", {
 })
 
 cpu:subscribe("mouse.clicked", function(env)
-  sbar.exec("open -a 'Activity Monitor'")
+  sbar.exec("\"$CONFIG_DIR/helpers/btop_launch.command\"")
 end)
