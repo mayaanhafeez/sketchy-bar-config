@@ -2,7 +2,7 @@ local colors = require("colors")
 local settings = require("settings")
 
 local hyprspace = os.getenv("HYPRSPACE_BIN") or "/opt/homebrew/bin/hyprspace"
-local workspace_ids = { "1", "2", "3", "4", "5"}
+local workspace_ids = { "1", "2", "3", "4", "5", "6"}
 
 sbar.add("event", "hyprspace_workspace_change")
 
@@ -11,11 +11,12 @@ for _, sid in ipairs(workspace_ids) do
     icon = {
       font = { family = settings.font.numbers },
       string = sid,
-      padding_left = 6,
-      padding_right = 6,
+      padding_left = 4,
+      padding_right = 4,
       color = colors.white,
     },
     label = {
+      padding_left = 0,
       padding_right = 0,
       drawing = false,
       color = colors.grey,
@@ -27,8 +28,8 @@ for _, sid in ipairs(workspace_ids) do
     padding_left = 3,
     background = {
       color = colors.transparent,
-      height = 20,
-      corner_radius = 6,
+      height = 16,
+      corner_radius = 4,
       border_width = 0,
       border_color = colors.transparent,
     },
