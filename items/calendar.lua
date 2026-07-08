@@ -1,5 +1,6 @@
 local settings = require("settings")
 local colors = require("colors")
+local display = require("helpers.display")
 
 local spacer_before = sbar.add("item", { position = "right", width = settings.group_paddings })
 
@@ -28,18 +29,16 @@ local cal = sbar.add("item", {
 
 local spacer_after = sbar.add("item", { position = "right", width = 2 })
 
-local function update_position()
-  sbar.exec("system_profiler SPDisplaysDataType 2>/dev/null | awk '/Resolution:/{t++} /Built-in.*Display/{b++} END{if(t==b){print \"internal\"}else{print \"external\"}}'", function(output)
-    if output:match("external") then
-      cal:set({ position = "center" })
-      spacer_before:set({ drawing = false })
-      spacer_after:set({ drawing = false })
-    else
-      cal:set({ position = "right" })
-      spacer_before:set({ drawing = true })
-      spacer_after:set({ drawing = true })
-    end
-  end)
+local function update_position(display_type)
+  if display_type == "external" then
+    cal:set({ position = "center" })
+    spacer_before:set({ drawing = false })
+    spacer_after:set({ drawing = false })
+  else
+    cal:set({ position = "right" })
+    spacer_before:set({ drawing = true })
+    spacer_after:set({ drawing = true })
+  end
 end
 
 cal:subscribe({ "forced", "routine", "system_woke" }, function(env)
@@ -47,7 +46,7 @@ cal:subscribe({ "forced", "routine", "system_woke" }, function(env)
 end)
 
 cal:subscribe("display_change", function(env)
-  update_position()
+  display.detect(update_position)
 end)
 
-update_position()
+display.detect(update_position)

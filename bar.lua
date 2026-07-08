@@ -1,12 +1,17 @@
-local colors = require("colors")
+local settings = require("settings")
+local display = require("helpers.display")
 
--- Equivalent to the --bar domain
 sbar.bar({
-  height = 30,
-  color = colors.bar.bg,
+  height = settings.height_internal,
+  color = require("colors").bar.bg,
   padding_right = 2,
   padding_left = 2,
-  -- Render above the native macOS menu bar so sketchybar-toggle can cleanly
-  -- swap between the two (required by sketchybar-toggle).
   topmost = "window",
 })
+
+sbar.add("event", "display_change_check")
+sbar.add("item", { drawing = false, position = "left" }):subscribe("display_change_check", function()
+  display.detect(display.update_bar_height)
+end)
+
+display.detect(display.update_bar_height)

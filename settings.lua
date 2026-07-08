@@ -4,6 +4,10 @@ return {
   paddings = 3,
   group_paddings = 5,
 
+  -- Bar height: external monitor (no notch) vs built-in display (notch)
+  height_external = 30,
+  height_internal = 38,
+
   icons = "sf-symbols", -- alternatively available: NerdFont
 
   -- This is a font configuration for SF Pro and SF Mono (installed manually)
