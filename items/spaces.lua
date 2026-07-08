@@ -29,7 +29,7 @@ for _, sid in ipairs(workspace_ids) do
     background = {
       color = colors.transparent,
       height = 16,
-      corner_radius = 4,
+      corner_radius = 6,
       border_width = 0,
       border_color = colors.transparent,
     },
