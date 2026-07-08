@@ -21,8 +21,8 @@ local icons = {
       charging = "󰂆",
     },
     wifi = {
-      connected    = "􀙇",
-      disconnected = "􀙈",
+      connected    = "󰤨",
+      disconnected = "󰤭",
     },
     media = {
       back       = "􀊊",
