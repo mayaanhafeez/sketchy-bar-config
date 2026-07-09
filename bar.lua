@@ -9,8 +9,7 @@ sbar.bar({
   topmost = "window",
 })
 
-sbar.add("event", "display_change_check")
-sbar.add("item", { drawing = false, position = "left" }):subscribe("display_change_check", function()
+sbar.add("item", { drawing = false, position = "left" }):subscribe("display_change", function()
   display.detect(display.update_bar_height)
 end)
 
