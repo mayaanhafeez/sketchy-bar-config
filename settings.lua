@@ -1,5 +1,5 @@
 return {
-  theme = "catppuccin_mocha", -- available: rose_pine, catppuccin_mocha
+  theme = "tokyo_night_storm", -- available: rose_pine, catppuccin_mocha, tokyo_night_storm
 
   paddings = 3,
   group_paddings = 5,
