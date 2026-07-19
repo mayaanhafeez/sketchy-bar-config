@@ -1,14 +1,14 @@
--- Tokyo Night Storm
+-- Tokyo Night (Night)
 return {
   bar = {
-    bg     = 0xfc24283b,
-    border = 0xff1b1e2d,
+    bg     = 0xfc1a1b26,
+    border = 0xff16161e,
   },
   popup = {
-    bg     = 0xc01f2335,
+    bg     = 0xc016161e,
     border = 0xff565f89,
   },
-  base           = 0xff24283b,
+  base           = 0xff1a1b26,
   surface        = 0xff292e42,
   overlay        = 0xff3b4261,
   muted          = 0xff565f89,
@@ -21,13 +21,13 @@ return {
   foam           = 0xff73daca,  -- teal
   iris           = 0xff9d7cd8,  -- purple
 
-  highlight_low  = 0xff1f2335,
+  highlight_low  = 0xff16161e,
   highlight_med  = 0xff292e42,
   highlight_high = 0xff3b4261,
 
-  bg1         = 0xff24283b,
+  bg1         = 0xff1a1b26,
   bg2         = 0xff3b4261,
-  black       = 0xff1d202f,
+  black       = 0xff15161e,
   white       = 0xffc0caf5,
   grey        = 0xff565f89,
   red         = 0xfff7768e,
