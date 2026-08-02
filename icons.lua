@@ -4,6 +4,7 @@ local icons = {
   sf_symbols = {
     apple = "􀣺",
     cpu = "􀫥",
+    robot = "󰚩",
 
     volume = {
       _100 = "􀊩",
@@ -34,6 +35,7 @@ local icons = {
   nerdfont = {
     apple = "",
     cpu = "",
+    robot = "󰚩",
 
     volume = {
       _100 = "",
