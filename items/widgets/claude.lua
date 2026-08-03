@@ -8,7 +8,7 @@ local POPUP_WIDTH = 320
 local PAD = 22                -- inset of popup content from the popup edges
 local ROW_HEIGHT = 22         -- popup.height: sketchybar's per-row height in a popup
 local DAY_ROWS = 7
-local MODEL_ROWS = 5
+local MODEL_ROWS = 6
 local DETAIL_INTERVAL = 120   -- seconds between background refreshes of the popup data
 
 local CONTENT = POPUP_WIDTH - 2 * PAD

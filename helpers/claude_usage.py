@@ -251,10 +251,16 @@ def pretty_model(model):
 
 
 def total_tokens(usage):
+    """Weighted tokens, matching how Anthropic bills and meters subscription
+    limits: cache reads count at 0.1x, cache writes at 1.25x.
+
+    Raw cache_read tokens dominate transcripts (every turn re-reads the whole
+    context) and summing them at face value makes a day look like ~100M.
+    """
     return (usage.get("input_tokens", 0)
             + usage.get("output_tokens", 0)
-            + usage.get("cache_creation_input_tokens", 0)
-            + usage.get("cache_read_input_tokens", 0))
+            + usage.get("cache_creation_input_tokens", 0) * 1.25
+            + usage.get("cache_read_input_tokens", 0) * 0.1)
 
 
 def fetch_tokens():
@@ -332,7 +338,7 @@ def fetch_tokens():
         label = "Today" if day == today else day.strftime("%a")
         days.append({"label": label, "tokens": by_day.get(day.isoformat(), 0)})
 
-    models = sorted(by_model.items(), key=lambda kv: -kv[1])[:5]
+    models = sorted(by_model.items(), key=lambda kv: -kv[1])[:6]
     return {"days": days, "models": [{"label": n, "tokens": t} for n, t in models]}
 
 
