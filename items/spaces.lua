@@ -43,9 +43,11 @@ for _, sid in ipairs(workspace_ids) do
   space:subscribe("hyprspace_workspace_change", function(env)
     local selected = env.FOCUSED_WORKSPACE == current_sid
     space:set({
-      icon = { color = selected and colors.transparent or colors.white },
+      icon = {
+        string = selected and "󱓻" or current_sid,
+        color = colors.white,
+      },
       label = { highlight = selected },
-      background = { color = selected and colors.white or colors.transparent },
     })
   end)
 
