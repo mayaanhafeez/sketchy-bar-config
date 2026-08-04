@@ -32,7 +32,7 @@ local FILL = colors.with_alpha(colors.white, 0.55)
 local BLOCK = colors.with_alpha(colors.white, 0.11)
 local DIM = colors.with_alpha(colors.white, 0.45)
 
-local status_cmd = "'" .. config_dir .. "/helpers/claude_status.sh'"
+local status_cmd = "'" .. config_dir .. "/helpers/agent_status.sh'"
 local detail_cmd = "'" .. config_dir .. "/helpers/claude_usage.py'"
 
 -- The popup is set entirely in the same monospace face the clock uses, so it
@@ -256,8 +256,53 @@ local function add_header_row(name, opts)
   })
 end
 
-add_spacer("widgets.claude.topper")
+-- The two popup implementations stay separate so each can refresh from its
+-- native local data source, while the tabs make them feel like one widget.
+local function add_switcher(name)
+  return sbar.add("item", name, {
+    position = popup_pos,
+    width = CONTENT,
+    padding_left = 0,
+    padding_right = 0,
+    icon = {
+      string = "Claude Code",
+      align = "center",
+      width = CONTENT / 2,
+      padding_left = 0,
+      padding_right = 0,
+      color = colors.white,
+      font = font(11.5, "Bold"),
+      background = {
+        drawing = true,
+        border_width = 1,
+        border_color = colors.white,
+        color = BLOCK,
+        corner_radius = 0,
+        height = ROW_HEIGHT - 2,
+      },
+    },
+    label = {
+      string = "Codex",
+      align = "center",
+      width = CONTENT / 2,
+      padding_left = 0,
+      padding_right = 0,
+      color = colors.white,
+      font = font(11.5),
+      background = {
+        drawing = true,
+        border_width = 1,
+        border_color = colors.grey,
+        color = colors.transparent,
+        corner_radius = 0,
+        height = ROW_HEIGHT - 2,
+      },
+    },
+    background = { drawing = false },
+  })
+end
 
+add_spacer("widgets.claude.topper")
 local header = add_header_row("widgets.claude.header", {
   label = "Claude Code",
   font = font(14.0, "Bold"),
@@ -268,6 +313,32 @@ local plan_row = add_header_row("widgets.claude.plan", {
   font = font(10.0),
   color = colors.grey,
 })
+
+local switcher = add_switcher("widgets.claude.switcher")
+
+switcher:subscribe("mouse.clicked", function()
+  local codex_visible = _G.codex_visible
+  if codex_visible then
+    _G.show_codex_content(false)
+    _G.show_claude_content(true)
+    header:set({ label = { string = "Claude Code" } })
+    switcher:set({
+      icon = { font = font(11.5, "Bold"), background = { border_color = colors.white, color = BLOCK } },
+      label = { font = font(11.5), background = { border_color = colors.grey, color = colors.transparent } },
+    })
+    _G.codex_visible = false
+  else
+    _G.show_claude_content(false)
+    _G.show_codex_content(true)
+    header:set({ label = { string = "Codex" } })
+    plan_row:set({ label = { string = "OpenCode" } })
+    switcher:set({
+      icon = { font = font(11.5), background = { border_color = colors.grey, color = colors.transparent } },
+      label = { font = font(11.5, "Bold"), background = { border_color = colors.white, color = BLOCK } },
+    })
+    _G.codex_visible = true
+  end
+end)
 
 local divider1 = add_divider("widgets.claude.divider1")
 local limits_title = add_section("widgets.claude.limits.title", "LIMITS")
@@ -323,11 +394,27 @@ end
 
 add_spacer("widgets.claude.footer")
 
+local claude_content = { divider1, limits_title, divider2, days_title, divider3, models_title }
+for _, row in pairs(meters) do
+  table.insert(claude_content, row.head)
+  table.insert(claude_content, row.meter)
+  table.insert(claude_content, row.reset)
+end
+for _, row in ipairs(day_rows) do table.insert(claude_content, row) end
+for _, row in ipairs(model_rows) do table.insert(claude_content, row) end
+
+_G.show_claude_content = function(show)
+  for _, item in ipairs(claude_content) do item:set({ drawing = show }) end
+end
+
 --------------------------------------------------------------------------
 -- data
 --------------------------------------------------------------------------
 
 local function render(data)
+  -- A refresh started while Claude was visible can finish after the user has
+  -- switched tabs. It must not redraw Claude rows over the Codex view.
+  if _G.codex_visible then return end
   local subscribed = data.subscribed == "1"
 
   plan_row:set({ label = { string = data.plan and string.upper(data.plan) or "" } })
@@ -408,6 +495,32 @@ local function refresh_detail(callback)
     if callback then callback() end
   end)
 end
+
+switcher:subscribe("mouse.clicked", function()
+  if _G.codex_visible then
+    _G.codex_visible = false
+    _G.show_codex_content(false)
+    _G.show_claude_content(true)
+    header:set({ drawing = true })
+    codex_header:set({ drawing = false })
+    switcher:set({
+      icon = { font = font(11.5, "Bold"), background = { border_color = colors.white, color = BLOCK } },
+      label = { font = font(11.5), background = { border_color = colors.grey, color = colors.transparent } },
+    })
+    refresh_detail()
+  else
+    _G.codex_visible = true
+    _G.show_claude_content(false)
+    _G.show_codex_content(true)
+    header:set({ drawing = false })
+    codex_header:set({ drawing = true })
+    plan_row:set({ label = { string = "OpenCode" } })
+    switcher:set({
+      icon = { font = font(11.5), background = { border_color = colors.grey, color = colors.transparent } },
+      label = { font = font(11.5, "Bold"), background = { border_color = colors.white, color = BLOCK } },
+    })
+  end
+end)
 
 --------------------------------------------------------------------------
 -- visibility + interaction

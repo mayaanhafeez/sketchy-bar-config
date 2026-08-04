@@ -7,6 +7,7 @@ sbar.bar({
   padding_right = 2,
   padding_left = 2,
   topmost = "window",
+  font_smoothing = "on",
 })
 
 sbar.add("item", { drawing = false, position = "left" }):subscribe("display_change", function()
