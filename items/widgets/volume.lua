@@ -39,7 +39,7 @@ local volume_icon = sbar.add("item", "widgets.volume2", {
 local volume_bracket = sbar.add("bracket", "widgets.volume.bracket", {
   volume_icon.name,
 }, {
-  popup = { align = "center" }
+  popup = { align = "right" }
 })
 
 sbar.add("item", "widgets.volume.padding", {

@@ -12,7 +12,7 @@ local battery = sbar.add("item", "widgets.battery", {
   },
   label = { drawing = false },
   update_freq = 250,
-  popup = { align = "center" }
+  popup = { align = "right" }
 })
 
 local battery_pct = sbar.add("item", {
