@@ -24,6 +24,14 @@ local icons = {
     wifi = {
       connected    = "󰤨",
       disconnected = "󰤭",
+      off          = "󰤮",
+      -- Signal strength bars, weakest → strongest (omarchy wifiIconFor).
+      bars         = { "󰤯", "󰤟", "󰤢", "󰤥", "󰤨" },
+      lock         = "󰌾",
+      forget       = "󰅙",
+      qr           = "󰐲",
+      speed        = "󰓅",
+      power        = "󰤪",
     },
     media = {
       back       = "􀊊",
@@ -55,6 +63,13 @@ local icons = {
     wifi = {
       connected    = "󰖩",
       disconnected = "󰖪",
+      off          = "󰤮",
+      bars         = { "󰤯", "󰤟", "󰤢", "󰤥", "󰤨" },
+      lock         = "󰌾",
+      forget       = "󰅙",
+      qr           = "󰐲",
+      speed        = "󰓅",
+      power        = "󰤪",
     },
     media = {
       back       = "",
