@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Emit recent OpenCode token totals for the SketchyBar Codex popup."""
 
+import base64
 import os
 import sqlite3
 import json
@@ -42,6 +43,24 @@ def fetch_weekly_limit():
         return None, None
 
 
+def fetch_plan():
+    """Read the ChatGPT plan name out of the cached auth id_token.
+
+    The claim payload is only decoded, never verified -- it is trusted local
+    state written by the Codex CLI itself.
+    """
+    try:
+        with open(os.path.join(HOME, ".codex", "auth.json")) as handle:
+            token = json.load(handle)["tokens"]["id_token"]
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload))
+        plan = (claims.get("https://api.openai.com/auth") or {}).get("chatgpt_plan_type")
+        return plan.replace("_", " ").title() if plan else None
+    except (OSError, KeyError, IndexError, AttributeError, TypeError, ValueError):
+        return None
+
+
 def human_tokens(tokens):
     if tokens >= 1_000_000:
         return "%.1fM" % (tokens / 1_000_000)
@@ -61,6 +80,10 @@ def display_model(model):
 
 
 def main():
+    plan = fetch_plan()
+    if plan:
+        print("plan=%s" % plan)
+
     weekly_percent, weekly_reset = fetch_weekly_limit()
     if weekly_percent is not None:
         print("weekly_pct=%d" % round(weekly_percent))

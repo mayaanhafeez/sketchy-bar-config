@@ -1,5 +1,4 @@
 local colors = require("colors")
-local icons = require("icons")
 local settings = require("settings")
 
 local config_dir = os.getenv("CONFIG_DIR") or (os.getenv("HOME") .. "/.config/sketchybar")
@@ -7,7 +6,6 @@ local POPUP_WIDTH, PAD, ROW_HEIGHT = 320, 22, 22
 local CONTENT, DAY_ROWS, MODEL_ROWS = POPUP_WIDTH - 2 * PAD, 7, 6
 local TRACK = colors.with_alpha(colors.white, 0.13)
 local FILL = colors.with_alpha(colors.white, 0.55)
-local BLOCK = colors.with_alpha(colors.white, 0.11)
 local DIM = colors.with_alpha(colors.white, 0.45)
 local VALUE_W = 54
 local detail_cmd = "'" .. config_dir .. "/helpers/codex_usage.py'"
@@ -48,25 +46,46 @@ local function slider(name, chars, value_chars, thickness, fill)
   })
 end
 
-local divider1 = row("widgets.codex.divider1", { background = { drawing = true, height = 1, corner_radius = 0, border_width = 0, color = TRACK, padding_left = PAD, padding_right = 0 } })
+local function spacer(name)
+  return item(name, { width = CONTENT, padding_left = 0, padding_right = 0, icon = { drawing = false }, label = { drawing = false }, background = { drawing = false } })
+end
+
+local function divider(name)
+  local line = _G.add_ai_divider(name)
+  line:set({ drawing = false })
+  return line
+end
+
+local divider1 = divider("widgets.codex.divider1")
 local limits_title = row("widgets.codex.limits.title", { icon = "LIMITS", icon_color = colors.grey, icon_font = font(9, "Bold") })
 local weekly_head = row("widgets.codex.weekly", { icon = "Weekly", icon_font = font(13), label = "--", label_width = VALUE_W })
 local weekly_meter = slider("widgets.codex.weekly.meter", 0, 0)
 local weekly_reset = row("widgets.codex.weekly.reset", { icon = "", icon_color = colors.grey, icon_font = font(9.5) })
-local divider_limits = row("widgets.codex.divider.limits", { background = { drawing = true, height = 1, corner_radius = 0, border_width = 0, color = TRACK, padding_left = PAD, padding_right = 0 } })
+local divider_limits = divider("widgets.codex.divider.limits")
 local days_title = row("widgets.codex.days.title", { icon = "TOKENS BY DAY", icon_color = colors.grey, icon_font = font(9, "Bold") })
 local day_rows = {}
 for i = 1, DAY_ROWS do day_rows[i] = slider("widgets.codex.day." .. i, 6, 8) end
-local divider2 = row("widgets.codex.divider2", { background = { drawing = true, height = 1, corner_radius = 0, border_width = 0, color = TRACK, padding_left = PAD, padding_right = 0 } })
+local divider2 = divider("widgets.codex.divider2")
 local models_title = row("widgets.codex.models.title", { icon = "TOKENS BY MODEL", icon_color = colors.grey, icon_font = font(9, "Bold") })
-local model_rows = {}
-for i = 1, MODEL_ROWS do model_rows[i] = slider("widgets.codex.model." .. i, 10, 8, ROW_HEIGHT - 6, BLOCK) end
 
-local content = { divider1, limits_title, weekly_head, weekly_meter, weekly_reset, divider_limits, days_title, divider2, models_title }
+-- Model rows use the shared block style defined by the Claude widget: name and
+-- value composed inside one full-width block, fill drawn behind the text.
+local model_rows = {}
+for i = 1, MODEL_ROWS do
+  local block = _G.add_ai_block_row("widgets.codex.model." .. i)
+  block:set({ drawing = false })
+  model_rows[i] = block
+end
+local footer = spacer("widgets.codex.footer")
+
+local content = { divider1, limits_title, weekly_head, weekly_meter, weekly_reset, divider_limits, days_title, divider2, models_title, footer }
 for _, entry in ipairs(day_rows) do table.insert(content, entry) end
 for _, entry in ipairs(model_rows) do table.insert(content, entry) end
 
 local function render(data)
+  _G.set_codex_plan(data.plan and string.upper(data.plan) or "OPENCODE")
+  -- A slow refresh must not repaint Codex rows after switching back to Claude.
+  if _G.ai_tab ~= "codex" then return end
   local weekly = tonumber(data.weekly_pct)
   local show_weekly = weekly ~= nil
   limits_title:set({ drawing = show_weekly })
@@ -81,7 +100,11 @@ local function render(data)
   end
   for i = 1, MODEL_ROWS do
     local label, value, pct = (data["model." .. i] or ""):match("^([^|]*)|([^|]*)|(%d+)$")
-    model_rows[i]:set({ drawing = label ~= nil, icon = { string = pad_right(label, 10) }, label = { string = value or "" }, slider = { percentage = tonumber(pct) or 0 } })
+    if label and #label > 0 then
+      _G.set_ai_block_row(model_rows[i], label, value, pct)
+    else
+      model_rows[i]:set({ drawing = false })
+    end
   end
 end
 
@@ -92,6 +115,8 @@ local function refresh()
     render(data)
   end)
 end
+
+_G.refresh_codex = refresh
 
 _G.show_codex_content = function(show)
   for _, entry in ipairs(content) do entry:set({ drawing = show }) end

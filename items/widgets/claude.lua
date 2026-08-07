@@ -15,8 +15,6 @@ local CONTENT = POPUP_WIDTH - 2 * PAD
 local VALUE_W = 54            -- right-hand column holding a percentage, in points
 local DAY_CH = 6              -- weekday column, in characters; one wider than "Today"
                               -- so its bold weight cannot push the bar right
-local MODEL_CH = 10           -- model-name column, in characters
-local VALUE_CH = 8            -- token-count column, in characters, gutter included
 local LOGO_W = 26             -- rendered width of the Claude mark in the header
 local LOGO_GAP = 10           -- space between the mark and the product name
 
@@ -30,6 +28,7 @@ local LOGO_SPAN = 420 * LOGO_SCALE -- where the mark ends, in points
 local TRACK = colors.with_alpha(colors.white, 0.13)
 local FILL = colors.with_alpha(colors.white, 0.55)
 local BLOCK = colors.with_alpha(colors.white, 0.11)
+local BLOCK_FILL = colors.with_alpha(colors.white, 0.20)
 local DIM = colors.with_alpha(colors.white, 0.45)
 
 local status_cmd = "'" .. config_dir .. "/helpers/agent_status.sh'"
@@ -46,7 +45,7 @@ local function font(size, style)
 end
 
 local ROW_FONT = 10.5
-local CHAR_W = ROW_FONT * 0.6 -- monospace advance width, near enough for both SF Mono and JetBrains Mono
+local CHAR_W = ROW_FONT * 0.6 -- monospace advance width, exact for JetBrains Mono
 
 -- A slider row's bar starts wherever its icon text ends, so weekday and model
 -- names are padded to a fixed character count to hold that edge steady. Values
@@ -168,6 +167,77 @@ local function add_bar_row(name, opts)
   return sbar.add("slider", name, CONTENT - text_w, cfg)
 end
 
+-- A model row in the reference style: one full-width block with the name and
+-- value set inside it, and a proportional fill behind the text. The whole
+-- text is a single CONTENT-wide monospace icon string -- name left, value
+-- padded to the right edge -- and the fill is that element's background,
+-- shortened from the right with background.padding_right. Backgrounds and
+-- their paddings never enter sketchybar's item length, so no percentage can
+-- stretch the popup.
+local BLOCK_H = ROW_HEIGHT - 6
+local BLOCK_CH = math.floor(CONTENT / CHAR_W)
+
+local function add_block_row(name)
+  return sbar.add("item", name, {
+    position = popup_pos,
+    padding_left = PAD,
+    padding_right = PAD,
+    -- The item background spans the full row including the item paddings, so
+    -- it is padded back to CONTENT: the left pad shifts its start to the text
+    -- edge, and the right pad shortens it by both insets.
+    background = {
+      drawing = true,
+      color = BLOCK,
+      height = BLOCK_H,
+      corner_radius = 4,
+      border_width = 0,
+      padding_left = PAD,
+      padding_right = PAD * 2,
+    },
+    icon = {
+      string = "",
+      align = "left",
+      width = CONTENT,
+      padding_left = 0,
+      padding_right = 0,
+      color = colors.white,
+      font = font(ROW_FONT),
+      background = {
+        drawing = false,
+        color = BLOCK_FILL,
+        height = BLOCK_H,
+        corner_radius = 4,
+        border_width = 0,
+      },
+    },
+    label = { drawing = false },
+  })
+end
+
+-- Composes " name        value " to the block's full character width so the
+-- value lands on the right edge, then sizes the fill from the percentage.
+local function set_block_row(item, name, value, pct)
+  name = name or ""
+  value = value or ""
+  local inner = BLOCK_CH - 2
+  local max_name = inner - #value - 2
+  if #name > max_name then
+    name = name:sub(1, math.max(max_name - 2, 1)) .. ".."
+  end
+  local text = " " .. name .. string.rep(" ", math.max(inner - #name - #value, 1)) .. value .. " "
+  local fill = math.floor(CONTENT * (tonumber(pct) or 0) / 100 + 0.5)
+  item:set({
+    drawing = true,
+    icon = {
+      string = text,
+      background = { drawing = fill > 2, padding_right = CONTENT - fill },
+    },
+  })
+end
+
+_G.add_ai_block_row = add_block_row
+_G.set_ai_block_row = set_block_row
+
 local function add_section(name, title)
   return add_row(name, {
     icon = title,
@@ -190,15 +260,23 @@ local function add_spacer(name)
   })
 end
 
--- The rule is the item's background: its left padding provides the inset, and
--- only that side is padded, since a right pad shortens the drawn line.
+-- The rule is the item's background. An item background spans the content
+-- between the item paddings (its own padding properties are ignored), so the
+-- line is a CONTENT-wide blank icon between two PAD item paddings -- exactly
+-- how the block rows land on the same edges.
 local function add_divider(name)
   return sbar.add("item", name, {
     position = popup_pos,
-    width = CONTENT,
-    padding_left = 0,
-    padding_right = 0,
-    icon = { drawing = false },
+    padding_left = PAD,
+    padding_right = PAD,
+    icon = {
+      string = "",
+      align = "left",
+      width = CONTENT,
+      padding_left = 0,
+      padding_right = 0,
+      font = font(ROW_FONT),
+    },
     label = { drawing = false },
     background = {
       drawing = true,
@@ -206,11 +284,11 @@ local function add_divider(name)
       corner_radius = 0,
       border_width = 0,
       color = TRACK,
-      padding_left = PAD,
-      padding_right = 0,
     },
   })
 end
+
+_G.add_ai_divider = add_divider
 
 --------------------------------------------------------------------------
 -- popup contents
@@ -226,9 +304,12 @@ local function add_header_row(name, opts)
     background = { drawing = false },
     icon = {
       string = "",
+      align = "left",
       width = LOGO_SPAN + LOGO_GAP,
       padding_left = PAD,
       padding_right = 0,
+      color = colors.white,
+      font = { family = settings.font.text, style = settings.font.style_map["Bold"], size = 13.0 },
       background = opts.logo and {
         drawing = true,
         color = colors.transparent,
@@ -258,18 +339,20 @@ end
 
 -- The two popup implementations stay separate so each can refresh from its
 -- native local data source, while the tabs make them feel like one widget.
+local TAB_GAP = 8
+local TAB_W = CONTENT / 2 - TAB_GAP / 2
+
 local function add_switcher(name)
   return sbar.add("item", name, {
     position = popup_pos,
-    width = CONTENT,
-    padding_left = 0,
-    padding_right = 0,
+    padding_left = PAD,
+    padding_right = PAD,
     icon = {
       string = "Claude Code",
       align = "center",
-      width = CONTENT / 2,
+      width = TAB_W,
       padding_left = 0,
-      padding_right = 0,
+      padding_right = TAB_GAP,
       color = colors.white,
       font = font(11.5, "Bold"),
       background = {
@@ -284,7 +367,7 @@ local function add_switcher(name)
     label = {
       string = "Codex",
       align = "center",
-      width = CONTENT / 2,
+      width = TAB_W,
       padding_left = 0,
       padding_right = 0,
       color = colors.white,
@@ -315,30 +398,6 @@ local plan_row = add_header_row("widgets.claude.plan", {
 })
 
 local switcher = add_switcher("widgets.claude.switcher")
-
-switcher:subscribe("mouse.clicked", function()
-  local codex_visible = _G.codex_visible
-  if codex_visible then
-    _G.show_codex_content(false)
-    _G.show_claude_content(true)
-    header:set({ label = { string = "Claude Code" } })
-    switcher:set({
-      icon = { font = font(11.5, "Bold"), background = { border_color = colors.white, color = BLOCK } },
-      label = { font = font(11.5), background = { border_color = colors.grey, color = colors.transparent } },
-    })
-    _G.codex_visible = false
-  else
-    _G.show_claude_content(false)
-    _G.show_codex_content(true)
-    header:set({ label = { string = "Codex" } })
-    plan_row:set({ label = { string = "OpenCode" } })
-    switcher:set({
-      icon = { font = font(11.5), background = { border_color = colors.grey, color = colors.transparent } },
-      label = { font = font(11.5, "Bold"), background = { border_color = colors.white, color = BLOCK } },
-    })
-    _G.codex_visible = true
-  end
-end)
 
 local divider1 = add_divider("widgets.claude.divider1")
 local limits_title = add_section("widgets.claude.limits.title", "LIMITS")
@@ -371,25 +430,16 @@ for i = 1, DAY_ROWS do
   day_rows[i] = add_bar_row("widgets.claude.day." .. i, {
     icon_chars = DAY_CH,
     icon_color = colors.grey,
-    label_chars = VALUE_CH,
+    label_chars = 8,
   })
 end
 
 local divider3 = add_divider("widgets.claude.divider3")
 local models_title = add_section("widgets.claude.models.title", "TOKENS BY MODEL")
 
--- Model rows read as filled blocks rather than hairlines, matching the way
--- the reference weights this section more heavily than the daily one.
 local model_rows = {}
 for i = 1, MODEL_ROWS do
-  model_rows[i] = add_bar_row("widgets.claude.model." .. i, {
-    icon_chars = MODEL_CH,
-    icon_color = colors.white,
-    label_chars = VALUE_CH,
-    thickness = ROW_HEIGHT - 6,
-    radius = 4,
-    fill = BLOCK,
-  })
+  model_rows[i] = add_block_row("widgets.claude.model." .. i)
 end
 
 add_spacer("widgets.claude.footer")
@@ -408,16 +458,77 @@ _G.show_claude_content = function(show)
 end
 
 --------------------------------------------------------------------------
+-- tab state
+--------------------------------------------------------------------------
+
+-- One source of truth for which tab is showing. Everything that switches --
+-- highlight, header, plan line, row visibility -- goes through set_tab, so no
+-- click can leave the pieces disagreeing with each other.
+local current_tab = "claude"
+_G.ai_tab = "claude"
+
+local last_plan = ""    -- Claude's plan line, cached from the last render
+local codex_plan = ""   -- Codex's, pushed in by codex.lua
+
+_G.set_codex_plan = function(plan)
+  codex_plan = plan or ""
+  if current_tab == "codex" then
+    plan_row:set({ label = { string = codex_plan } })
+  end
+end
+
+local TAB_ACTIVE = { border_color = colors.white, color = BLOCK }
+local TAB_IDLE = { border_color = colors.grey, color = colors.transparent }
+
+local function apply_tab_style()
+  local on_claude = current_tab == "claude"
+  switcher:set({
+    icon = {
+      font = font(11.5, on_claude and "Bold" or "Regular"),
+      background = on_claude and TAB_ACTIVE or TAB_IDLE,
+    },
+    label = {
+      font = font(11.5, on_claude and "Regular" or "Bold"),
+      background = on_claude and TAB_IDLE or TAB_ACTIVE,
+    },
+  })
+end
+
+-- The header never hides; it swaps identity. That keeps the switcher on the
+-- same line no matter which tab is up. Codex has no bundled asset, so its
+-- mark is a terminal glyph drawn in the same gutter the Claude logo uses.
+local function apply_header()
+  if current_tab == "claude" then
+    header:set({
+      icon = { string = "", background = { drawing = true } },
+      label = { string = "Claude Code" },
+    })
+    plan_row:set({ label = { string = last_plan } })
+  else
+    header:set({
+      icon = { string = "❯_", y_offset = 0, background = { drawing = false } },
+      label = { string = "Codex" },
+    })
+    plan_row:set({ label = { string = codex_plan } })
+  end
+end
+
+--------------------------------------------------------------------------
 -- data
 --------------------------------------------------------------------------
 
+local last_data = nil
+
 local function render(data)
+  last_data = data
+  last_plan = data.plan and string.upper(data.plan) or ""
+
   -- A refresh started while Claude was visible can finish after the user has
   -- switched tabs. It must not redraw Claude rows over the Codex view.
-  if _G.codex_visible then return end
+  if current_tab ~= "claude" then return end
   local subscribed = data.subscribed == "1"
 
-  plan_row:set({ label = { string = data.plan and string.upper(data.plan) or "" } })
+  plan_row:set({ label = { string = last_plan } })
 
   -- Limits exist only on a subscription; API-key usage is billed, not capped.
   local show_limits = subscribed and data.limits == "1"
@@ -470,14 +581,12 @@ local function render(data)
   divider3:set({ drawing = shown_models > 0 })
   for i = 1, MODEL_ROWS do
     local entry = data["model." .. i]
+    local label, value, pct
     if entry then
-      local label, value, pct = entry:match("^([^|]*)|([^|]*)|(%d+)$")
-      model_rows[i]:set({
-        drawing = true,
-        icon = { string = pad_right(label, MODEL_CH) },
-        label = { string = value },
-        slider = { percentage = tonumber(pct) or 0 },
-      })
+      label, value, pct = entry:match("^([^|]*)|([^|]*)|(%d+)$")
+    end
+    if label and #label > 0 then
+      set_block_row(model_rows[i], label, value, pct)
     else
       model_rows[i]:set({ drawing = false })
     end
@@ -496,31 +605,34 @@ local function refresh_detail(callback)
   end)
 end
 
-switcher:subscribe("mouse.clicked", function()
-  if _G.codex_visible then
-    _G.codex_visible = false
+--------------------------------------------------------------------------
+-- tab switching
+--------------------------------------------------------------------------
+
+local function set_tab(tab)
+  if tab == current_tab then return end
+  current_tab = tab
+  _G.ai_tab = tab
+  if tab == "claude" then
     _G.show_codex_content(false)
     _G.show_claude_content(true)
-    header:set({ drawing = true })
-    codex_header:set({ drawing = false })
-    switcher:set({
-      icon = { font = font(11.5, "Bold"), background = { border_color = colors.white, color = BLOCK } },
-      label = { font = font(11.5), background = { border_color = colors.grey, color = colors.transparent } },
-    })
+    if last_data then render(last_data) end
     refresh_detail()
   else
-    _G.codex_visible = true
     _G.show_claude_content(false)
     _G.show_codex_content(true)
-    header:set({ drawing = false })
-    codex_header:set({ drawing = true })
-    plan_row:set({ label = { string = "OpenCode" } })
-    switcher:set({
-      icon = { font = font(11.5), background = { border_color = colors.grey, color = colors.transparent } },
-      label = { font = font(11.5, "Bold"), background = { border_color = colors.white, color = BLOCK } },
-    })
   end
-end)
+  apply_header()
+  apply_tab_style()
+end
+
+local function toggle_tab()
+  set_tab(current_tab == "claude" and "codex" or "claude")
+end
+
+switcher:subscribe("mouse.clicked", toggle_tab)
+-- Also reachable from the CLI: `sketchybar --trigger ai_tab_toggle`.
+switcher:subscribe("ai_tab_toggle", toggle_tab)
 
 --------------------------------------------------------------------------
 -- visibility + interaction
@@ -565,6 +677,7 @@ claude:subscribe("mouse.clicked", function(env)
     collapse()
   else
     last_detail = os.time()
+    if current_tab == "codex" and _G.refresh_codex then _G.refresh_codex() end
     refresh_detail(function()
       claude:set({ popup = { drawing = true } })
     end)
