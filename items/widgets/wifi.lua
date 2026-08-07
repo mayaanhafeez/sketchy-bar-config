@@ -6,18 +6,27 @@ local config_dir = os.getenv("CONFIG_DIR") or (os.getenv("HOME") .. "/.config/sk
 local helpers = config_dir .. "/helpers"
 local MACWIFI = "/usr/local/bin/macwifi"
 
-local width = 280
+local width = 336
+local pad = 12
 
 -- Wi-Fi panel, ported from omarchy's network panel (Panel.qml) onto a
 -- sketchybar popup. Everything macwifi can do is wired up (status, scan,
 -- connect, disconnect, forget, power); the controls macwifi has no backend
--- for (QR share, speed test, band pinning, DNS provider) stay on screen for
--- UI parity but do nothing when clicked.
+-- for (QR share, speed test, DNS provider) stay on screen for UI parity but
+-- do nothing when clicked.
+--
+-- Layout notes: a popup stacks its items vertically, one item per line, and a
+-- row is as tall as that item's background, so popup.height is dropped to 1
+-- and every row states its own height (transparent backgrounds still reserve
+-- the space). Within a row there are only two boxes to work with: the icon
+-- box spans [0, icon.width] and the label box picks up right after it, with
+-- padding insetting the text inside its own box. Columns past the second are
+-- therefore spaced out with the monospaced font rather than with more boxes.
 local wifi = sbar.add("item", "widgets.wifi", {
   position = "right",
   icon = { string = icons.wifi.off, color = colors.white },
   label = { drawing = false },
-  popup = { align = "center" },
+  popup = { align = "right", height = 1 },
 })
 
 sbar.add("item", "widgets.wifi.padding", {
@@ -41,6 +50,16 @@ end
 local FONT_REG = settings.font.style_map["Regular"]
 local FONT_SEMI = settings.font.style_map["Semibold"]
 local FONT_BOLD = settings.font.style_map["Bold"]
+
+local SZ_TITLE = 13.0
+local SZ_SMALL = 9.5
+local SZ_STAT = 9.5
+local SZ_NET = 12.0
+local SZ_PILL = 10.5
+
+local function font(size, style)
+  return { family = settings.font.text, style = style or FONT_REG, size = size }
+end
 
 local function bars(rssi)
   local idx = 0
@@ -69,71 +88,125 @@ local function is_secured(sec)
   return sec ~= "" and sec ~= "OPEN"
 end
 
--- ------------------------------------------------------------- row builders
-local flat = { drawing = false }
+-- Centre each entry in an equal share of a monospaced run, so a single label
+-- can hold a row of evenly spaced choices.
+local function slots(choices, total_chars)
+  local per = math.floor(total_chars / #choices)
+  local out = {}
+  for _, choice in ipairs(choices) do
+    local left = math.floor((per - #choice) / 2)
+    out[#out + 1] = string.rep(" ", left) .. choice .. string.rep(" ", per - #choice - left)
+  end
+  return table.concat(out)
+end
 
-local function detail_row(label)
+-- "key<spaces>value" filling exactly `chars` monospaced cells, so the value
+-- ends flush with the right edge of its column.
+local function pair(key, value, chars)
+  local gap = chars - #key - #value
+  if gap < 1 then gap = 1 end
+  return key .. string.rep(" ", gap) .. value
+end
+
+-- ------------------------------------------------------------- row builders
+-- An undrawn icon still reserves its padding, which would shove the label box
+-- sideways; zero it out wherever a row is label-only.
+local hidden = { drawing = false, width = 0, padding_left = 0, padding_right = 0 }
+
+-- A background that only exists to give its row a height.
+local function block(height, color)
   return {
-    position = "popup.widgets.wifi",
-    width = width,
-    icon = {
-      string = label,
-      width = 150,
-      align = "left",
-      font = { family = settings.font.text, style = FONT_REG, size = 12.0 },
-      color = colors.muted,
-    },
-    label = {
-      string = "--",
-      width = 116,
-      align = "right",
-      font = { family = settings.font.text, style = FONT_REG, size = 12.0 },
-      color = colors.text,
-    },
-    background = flat,
+    drawing = true,
+    height = height,
+    corner_radius = 0,
+    border_width = 0,
+    color = color or colors.transparent,
   }
+end
+
+-- Shared by every popup row, so the icon and label boxes below can be
+-- positioned in absolute pixels. `inset` pulls the whole row (its background
+-- included) in from both edges of the panel.
+local function row(name, inset, opts)
+  opts.position = "popup.widgets.wifi"
+  opts.width = width - 2 * inset
+  opts.padding_left = inset
+  opts.padding_right = inset
+  opts.scroll_texts = false
+  return sbar.add("item", name, opts)
+end
+
+local gap_seq = 0
+local function spacer(height, prefix)
+  gap_seq = gap_seq + 1
+  return row((prefix or "wifi.gap") .. "." .. gap_seq, 0, {
+    icon = hidden,
+    label = hidden,
+    background = block(height),
+  })
+end
+
+local rule_seq = 0
+local function divider()
+  rule_seq = rule_seq + 1
+  return row("wifi.rule." .. rule_seq, pad, {
+    icon = hidden,
+    label = hidden,
+    background = {
+      drawing = true,
+      height = 1,
+      corner_radius = 0,
+      border_width = 0,
+      color = colors.highlight_med,
+    },
+  })
 end
 
 local section_seq = 0
 local function section_header(text, prefix)
   section_seq = section_seq + 1
   prefix = prefix or "wifi.section"
-  return sbar.add("item", prefix .. "." .. section_seq, {
-    position = "popup.widgets.wifi",
-    width = width,
-    icon = { drawing = false },
+  return row((prefix or "wifi.section") .. "." .. section_seq, pad, {
+    icon = hidden,
     label = {
       string = text,
-      padding_left = 8,
-      font = { family = settings.font.text, style = FONT_BOLD, size = 11.0 },
+      width = width - 2 * pad,
+      align = "left",
+      padding_left = 0,
+      padding_right = 0,
+      font = font(SZ_SMALL, FONT_BOLD),
       color = colors.muted,
     },
-    background = flat,
+    background = block(22),
   })
 end
 
-local function pill_button(name, text, handler)
-  local item = sbar.add("item", name, {
-    position = "popup.widgets.wifi",
-    width = width,
-    icon = { drawing = false },
-    label = {
-      string = text,
-      align = "center",
-      font = { family = settings.font.text, style = FONT_SEMI, size = 13.0 },
-      color = colors.text,
-    },
-  })
-  item:subscribe("mouse.entered", function()
-    item:set({ background = { color = colors.bg2 } })
-  end)
-  item:subscribe("mouse.exited", function()
-    item:set({ background = { color = colors.transparent } })
-  end)
-  if handler then
-    item:subscribe("mouse.left", handler)
+-- Two "key .... value" pairs per line, one per half of the row. Each half is a
+-- 24 cell monospaced run, which puts both values flush against the right edge
+-- of their column.
+local STAT_CHARS = 24
+
+local function stat_line(name)
+  local half = {
+    width = (width - 2 * pad) // 2,
+    align = "left",
+    padding_left = 0,
+    padding_right = 0,
+    font = font(SZ_STAT),
+    color = colors.subtle,
+  }
+  local icon, label = {}, {}
+  for k, v in pairs(half) do
+    icon[k], label[k] = v, v
   end
-  return item
+  return row(name, pad, { icon = icon, label = label, background = block(18) })
+end
+
+local function set_stats(item, left_key, left_val, right_key, right_val)
+  item:set({
+    icon = { string = pair(left_key, left_val, STAT_CHARS) },
+    label = { string = pair(right_key, right_val, STAT_CHARS) },
+  })
 end
 
 -- ---------------------------------------------------------------- state
@@ -229,66 +302,156 @@ local function toggle_power()
 end
 
 -- ---------------------------------------------------------------- static UI
-local hero = sbar.add("item", "wifi.hero", {
-  position = "popup.widgets.wifi",
-  width = width,
+spacer(9)
+
+-- Title line: signal glyph + SSID on the left, QR share button on the right.
+-- QR sharing has no macwifi backend: kept for UI parity, no handler attached.
+local hero = row("wifi.hero", pad, {
   icon = {
-    string = icons.wifi.off,
-    font = { family = settings.font.text, style = FONT_REG, size = 18.0 },
+    string = icons.wifi.off .. "  Wi-Fi",
+    width = width - 2 * pad - 28,
+    align = "left",
+    padding_left = 0,
+    padding_right = 0,
+    font = font(SZ_TITLE, FONT_BOLD),
     color = colors.text,
   },
   label = {
-    string = "Wi-Fi",
-    font = { family = settings.font.text, style = FONT_SEMI, size = 15.0 },
-    color = colors.text,
+    string = icons.wifi.qr,
+    width = 28,
+    align = "center",
+    padding_left = 0,
+    padding_right = 0,
+    font = font(12.0),
+    color = colors.subtle,
+    background = {
+      drawing = true,
+      height = 26,
+      corner_radius = 8,
+      border_width = 1,
+      border_color = colors.muted,
+      color = colors.transparent,
+    },
   },
-  background = flat,
+  background = block(26),
 })
 
-local hero_meta = sbar.add("item", "wifi.meta", {
-  position = "popup.widgets.wifi",
-  width = width,
-  icon = { drawing = false },
-  label = {
+hero:subscribe("mouse.entered", function()
+  hero:set({ label = { background = { border_color = colors.subtle, color = colors.bg2 } } })
+end)
+hero:subscribe("mouse.exited", function()
+  hero:set({ label = { background = { border_color = colors.muted, color = colors.transparent } } })
+end)
+
+-- Status line: connection state on the left, power switch on the right.
+local hero_meta = row("wifi.meta", pad, {
+  icon = {
     string = "NOT CONNECTED",
-    padding_left = 8,
-    font = { family = settings.font.text, style = FONT_BOLD, size = 11.0 },
+    width = width - 2 * pad - 44,
+    align = "left",
+    padding_left = 30,
+    padding_right = 0,
+    font = font(SZ_SMALL, FONT_BOLD),
     color = colors.muted,
   },
-  background = flat,
+  label = {
+    string = "●",
+    width = 44,
+    align = "right",
+    padding_left = 6,
+    padding_right = 6,
+    font = font(15.0),
+    color = colors.muted,
+    background = {
+      drawing = true,
+      height = 20,
+      corner_radius = 10,
+      border_width = 0,
+      color = colors.overlay,
+    },
+  },
+  background = block(22),
 })
 
--- QR sharing and the speed test have no macwifi backend: kept for UI parity,
--- no handler attached, so clicking them does nothing.
-pill_button("wifi.qr", icons.wifi.qr .. "   QR code")
-pill_button("wifi.speed", icons.wifi.speed .. "   Speed test")
+local power_row = hero_meta
+power_row:subscribe("mouse.clicked", function(env)
+  if env.BUTTON ~= "left" then return end
+  toggle_power()
+end)
 
-local power_row = pill_button("wifi.power", icons.wifi.power .. "   Wi-Fi", toggle_power)
+spacer(8)
 
-local function detail(name, label)
-  return sbar.add("item", name, detail_row(label))
-end
+local radio_row = stat_line("wifi.detail.radio")
+spacer(6)
+local link_row = stat_line("wifi.detail.link")
+spacer(6)
+local device_row = stat_line("wifi.detail.device")
+spacer(16)
 
-local sig_row = detail("wifi.detail.signal", "Signal")
-local noise_row = detail("wifi.detail.noise", "Noise")
-local chan_row = detail("wifi.detail.channel", "Channel")
-local rate_row = detail("wifi.detail.txrate", "TX rate")
-local bssid_row = detail("wifi.detail.bssid", "BSSID")
-local iface_row = detail("wifi.detail.iface", "Interface")
+divider()
+spacer(11)
 
--- Band: macwifi can't pin a band, so the header only reports the live band
--- (derived from the channel) and these controls exist but do nothing.
-local band_header = section_header("WI-FI BAND", "wifi.band.hdr")
-pill_button("wifi.band.auto", "AUTOMATIC  ·  On")
-pill_button("wifi.band.2.4", "2.4GHZ")
-pill_button("wifi.band.5", "5GHZ")
+-- DNS provider: no macwifi backend, so the choices do nothing.
+section_header("DNS PROVIDER", "wifi.dns.hdr")
+row("wifi.dns", pad, {
+  icon = hidden,
+  label = {
+    string = slots({ "DHCP", "Cloudflare", "Google", "Custom" }, 44),
+    width = width - 2 * pad,
+    align = "center",
+    padding_left = 0,
+    padding_right = 0,
+    font = font(SZ_PILL),
+    color = colors.text,
+  },
+  background = {
+    drawing = true,
+    height = 28,
+    corner_radius = 8,
+    border_width = 1,
+    border_color = colors.muted,
+    color = colors.transparent,
+  },
+})
 
--- DNS provider: no macwifi backend, so the pills do nothing.
-local dns_header = section_header("DNS PROVIDER", "wifi.dns.hdr")
-pill_button("wifi.dns.dhcp", "DHCP")
-pill_button("wifi.dns.cloudflare", "Cloudflare")
-pill_button("wifi.dns.google", "Google")
-pill_button("wifi.dns.custom", "Custom")
+spacer(12)
+divider()
+spacer(6)
+
+-- Speed test has no macwifi backend either.
+row("wifi.speed", pad, {
+  icon = {
+    string = "SPEED TEST",
+    width = width - 2 * pad - 52,
+    align = "left",
+    padding_left = 0,
+    padding_right = 0,
+    font = font(SZ_SMALL, FONT_BOLD),
+    color = colors.muted,
+  },
+  label = {
+    string = "Run",
+    width = 52,
+    align = "center",
+    padding_left = 0,
+    padding_right = 0,
+    font = font(SZ_PILL, FONT_SEMI),
+    color = colors.text,
+    background = {
+      drawing = true,
+      height = 22,
+      corner_radius = 8,
+      border_width = 1,
+      border_color = colors.muted,
+      color = colors.transparent,
+    },
+  },
+  background = block(26),
+})
+
+spacer(6)
+divider()
+spacer(6)
 
 -- ---------------------------------------------------------------- rendering
 local function render_bar()
@@ -305,11 +468,9 @@ local function render_hero()
   local connected = state.ssid ~= "" and state.powered
   hero:set({
     icon = {
-      string = connected and bars(state.rssi) or icons.wifi.off,
-      color = colors.text,
-    },
-    label = {
-      string = connected and state.ssid or (state.powered and "Not connected" or "Wi-Fi is off"),
+      string = (connected and bars(state.rssi) or icons.wifi.off)
+        .. "   "
+        .. (connected and state.ssid or (state.powered and "Not connected" or "Wi-Fi is off")),
     },
   })
   local meta = "NOT CONNECTED"
@@ -321,32 +482,32 @@ local function render_hero()
     meta = "CONNECTED"
     meta_color = colors.pine
   end
-  hero_meta:set({ label = { string = meta, color = meta_color } })
+  hero_meta:set({ icon = { string = meta, color = meta_color } })
 end
 
 local function render_details()
   local dash = "--"
   local connected = state.ssid ~= "" and state.powered
-  sig_row:set({ label = { string = connected and (state.rssi .. " dBm") or dash } })
-  noise_row:set({ label = { string = connected and (state.noise .. " dBm") or dash } })
-  chan_row:set({ label = { string = connected and fmt_channel(state.channel) or dash } })
-  rate_row:set({ label = { string = connected and (state.txrate .. " Mbps") or dash } })
-  bssid_row:set({ label = { string = connected and state.bssid or dash } })
-  iface_row:set({ label = { string = state.iface ~= "" and state.iface or dash } })
+  set_stats(radio_row,
+    "Signal", connected and (state.rssi .. " dBm") or dash,
+    "Noise", connected and (state.noise .. " dBm") or dash)
+  set_stats(link_row,
+    "Channel", connected and fmt_channel(state.channel) or dash,
+    "TX rate", connected and (state.txrate .. " Mbps") or dash)
+  set_stats(device_row,
+    "Interface", state.iface ~= "" and state.iface or dash,
+    "BSSID", connected and state.bssid or dash)
 end
 
+-- Knob to the right on a lit track when the radio is on, to the left on a
+-- dark track when it is off.
 local function render_power()
   power_row:set({
     label = {
-      string = icons.wifi.power .. "   Wi-Fi  ·  " .. (state.powered and "On" or "Off"),
+      align = state.powered and "right" or "left",
+      color = state.powered and colors.text or colors.muted,
+      background = { color = state.powered and colors.highlight_high or colors.overlay },
     },
-  })
-end
-
-local function render_band()
-  local band = fmt_band(state.channel)
-  band_header:set({
-    label = { string = band ~= "" and ("WI-FI BAND: " .. band) or "WI-FI BAND" },
   })
 end
 
@@ -357,53 +518,56 @@ local function add_network_row(index, net)
   local connected = net.ssid == state.ssid
   local pending = net.ssid == state.pending
 
-  local label = net.ssid
-  local label_color = colors.subtle
+  local status = ""
+  local status_color = colors.muted
   if pending then
-    local busy = state.pending_kind == "disconnect" and "Disconnecting…"
+    status = state.pending_kind == "disconnect" and "Disconnecting…"
       or state.pending_kind == "forget" and "Forgetting…"
       or "Connecting…"
-    label = label .. "  —  " .. busy
-    label_color = colors.gold
+    status_color = colors.gold
   elseif connected then
-    label = label .. "  —  Connected"
-    label_color = colors.text
+    status = "Connected"
   end
 
-  local icon = bars(net.rssi)
   if is_secured(net.sec) then
-    icon = icons.wifi.lock .. " " .. icon
+    status = status == "" and icons.wifi.lock or (status .. "  " .. icons.wifi.lock)
   end
 
-  local row = sbar.add("item", "wifi.net." .. index, {
-    position = "popup.widgets.wifi",
-    width = width,
+  local net_row = row("wifi.net." .. index, 8, {
     background = {
-      height = 30,
+      drawing = true,
+      height = connected and 34 or 32,
       corner_radius = 8,
-      border_width = 1,
-      border_color = connected and colors.pine or colors.bg2,
-      color = colors.transparent,
+      border_width = 0,
+      color = connected and colors.bg2 or colors.transparent,
     },
     icon = {
-      string = icon,
-      font = { family = settings.font.text, style = FONT_REG, size = 14.0 },
-      color = connected and colors.pine or colors.subtle,
+      string = bars(net.rssi) .. "  " .. net.ssid,
+      width = 192,
+      align = "left",
+      padding_left = 12,
+      padding_right = 0,
+      font = font(SZ_NET, FONT_SEMI),
+      color = connected and colors.text or colors.subtle,
     },
     label = {
-      string = label,
-      font = { family = settings.font.text, style = FONT_SEMI, size = 13.0 },
-      color = label_color,
+      string = status,
+      width = width - 16 - 192,
+      align = "right",
+      padding_left = 0,
+      padding_right = 14,
+      font = font(SZ_PILL),
+      color = status_color,
     },
   })
 
-  row:subscribe("mouse.entered", function()
-    row:set({ background = { color = colors.bg2 } })
+  net_row:subscribe("mouse.entered", function()
+    net_row:set({ background = { color = colors.bg2 } })
   end)
-  row:subscribe("mouse.exited", function()
-    row:set({ background = { color = colors.transparent } })
+  net_row:subscribe("mouse.exited", function()
+    net_row:set({ background = { color = connected and colors.bg2 or colors.transparent } })
   end)
-  row:subscribe("mouse.clicked", function(env)
+  net_row:subscribe("mouse.clicked", function(env)
     if env.BUTTON == "right" then
       if not connected and net.known and is_secured(net.sec) then
         forget_network(net.ssid)
@@ -423,10 +587,14 @@ render_networks = function()
   sbar.remove("/wifi\\.net\\../")
   sbar.remove("/wifi\\.section\\../")
 
+  if nets_header then
+    nets_header:set({
+      drawing = state.scanning,
+      label = { string = "SCANNING WI-FI…" },
+    })
+  end
+
   if not state.powered then
-    if nets_header then
-      nets_header:set({ label = { string = "WI-FI NETWORKS" } })
-    end
     return
   end
 
@@ -441,12 +609,6 @@ render_networks = function()
     if a.known ~= b.known then return a.known end
     return a.rssi > b.rssi
   end)
-
-  if nets_header then
-    nets_header:set({
-      label = { string = state.scanning and "SCANNING WI-FI…" or "WI-FI NETWORKS" },
-    })
-  end
 
   local last_title = ""
   local index = 0
@@ -464,6 +626,8 @@ render_networks = function()
     add_network_row(index, net)
     index = index + 1
   end
+
+  spacer(10, "wifi.section.pad")
 end
 
 -- ---------------------------------------------------------------- refresh
@@ -507,7 +671,6 @@ local function render_all()
   render_hero()
   render_details()
   render_power()
-  render_band()
 end
 
 local function scan_networks()
@@ -546,8 +709,11 @@ schedule_refresh = function(sec)
   end)
 end
 
--- ---------------------------------------------------------------- networks header
-nets_header = section_header("WI-FI NETWORKS", "wifi.nets.hdr")
+-- --------------------------------------------------------- networks header
+-- Only drawn while a scan is in flight; the KNOWN / OTHER headers below it
+-- carry the labelling once results land.
+nets_header = section_header("SCANNING WI-FI…", "wifi.nets.hdr")
+nets_header:set({ drawing = false })
 
 -- ---------------------------------------------------------------- events
 wifi:subscribe("mouse.clicked", function(env)
