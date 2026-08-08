@@ -180,6 +180,7 @@ local BLOCK_CH = math.floor(CONTENT / CHAR_W)
 local function add_block_row(name)
   return sbar.add("item", name, {
     position = popup_pos,
+    width = CONTENT,
     padding_left = PAD,
     padding_right = PAD,
     -- The item background spans the full row including the item paddings, so
@@ -215,7 +216,8 @@ local function add_block_row(name)
 end
 
 -- Composes " name        value " to the block's full character width so the
--- value lands on the right edge, then sizes the fill from the percentage.
+-- value lands on the right edge. The icon keeps rendering that full text, while
+-- its fixed width independently controls the background fill.
 local function set_block_row(item, name, value, pct)
   name = name or ""
   value = value or ""
@@ -230,7 +232,8 @@ local function set_block_row(item, name, value, pct)
     drawing = true,
     icon = {
       string = text,
-      background = { drawing = fill > 2, padding_right = CONTENT - fill },
+      width = fill,
+      background = { drawing = fill > 2 },
     },
   })
 end
