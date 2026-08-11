@@ -4,16 +4,18 @@ local settings = require("settings")
 
 local config_dir = os.getenv("CONFIG_DIR") or (os.getenv("HOME") .. "/.config/sketchybar")
 local helpers = config_dir .. "/helpers"
-local MACWIFI = "/usr/local/bin/macwifi"
+-- MACWIFI_BIN points this (and helpers/wifi_speedtest.sh) at a different build,
+-- e.g. target/debug/macwifi while a feature is still unreleased.
+local MACWIFI = os.getenv("MACWIFI_BIN") or "/usr/local/bin/macwifi"
 
 local width = 336
 local pad = 12
 
 -- Wi-Fi panel, ported from omarchy's network panel (Panel.qml) onto a
 -- sketchybar popup. Everything macwifi can do is wired up (status, scan,
--- connect, disconnect, forget, power); the controls macwifi has no backend
--- for (QR share, speed test, DNS provider) stay on screen for UI parity but
--- do nothing when clicked.
+-- connect, disconnect, forget, power, speed test); the controls macwifi has no
+-- backend for (QR share, DNS provider) stay on screen for UI parity but do
+-- nothing when clicked.
 --
 -- Layout notes: a popup stacks its items vertically, one item per line, and a
 -- row is as tall as that item's background, so popup.height is dropped to 1
@@ -224,6 +226,20 @@ local state = {
   pending = "",              -- ssid with an action in flight
   pending_kind = "",         -- "connect" | "disconnect" | "forget"
   scanning = false,
+  speedtest = {
+    supported = nil,         -- nil until probed, then true / false
+    state = "idle",          -- idle | running | done | failed
+    provider = "",
+    download = nil,          -- Mbps; live sample while running, final when done
+    upload = nil,            -- Mbps
+    ping = nil,              -- ms
+    elapsed_ms = 0,
+    duration_ms = nil,
+    responsiveness = nil,    -- Apple's responsiveness score, in RPM
+    interface = "",
+    server = "",
+    error = "",
+  },
 }
 
 local popup_open = false
@@ -299,6 +315,137 @@ end
 local function toggle_power()
   local target = state.powered and "off" or "on"
   sbar.exec(MACWIFI .. " power " .. target, function() schedule_refresh(2) end)
+end
+
+-- ------------------------------------------------------------- speed test
+-- A speed test runs for 30s to several minutes and sbar.exec cannot stream a
+-- subprocess, so helpers/wifi_speedtest.sh detaches the run and this polls it
+-- once a second while it is live. Everything here only maintains
+-- state.speedtest; drawing it is the UI pass's job.
+local SPEEDTEST = sh(helpers .. "/wifi_speedtest.sh")
+local OVERLAY = sh(helpers .. "/speedtest_overlay/bin/speedtest_overlay")
+local POLL_SECONDS = 1
+
+-- TEMPORARY: the installed macwifi has no `speedtest` subcommand yet, so the
+-- speed-test path alone runs against the local debug build when one is present.
+-- Everything else in this file keeps using the installed binary, which is the
+-- signed app bundle and the one known to serve status and scan properly.
+-- Once macwifi ships speedtest, delete DEBUG_MACWIFI and this whole fallback:
+-- SPEEDTEST_BIN becomes MACWIFI and the prefix stops mattering.
+local function file_exists(path)
+  local handle = io.open(path, "r")
+  if handle then handle:close() return true end
+  return false
+end
+
+local DEBUG_MACWIFI = os.getenv("HOME")
+  .. "/personal/network_tui/macwifi/target/debug/macwifi"
+
+local SPEEDTEST_BIN = os.getenv("MACWIFI_BIN")
+  or (file_exists(DEBUG_MACWIFI) and DEBUG_MACWIFI)
+  or MACWIFI
+
+-- Both the helper and the overlay resolve macwifi from MACWIFI_BIN, so passing
+-- it in the environment of each call covers them without touching the rest.
+local SPEEDTEST_ENV = "MACWIFI_BIN=" .. sh(SPEEDTEST_BIN) .. " "
+
+local speedtest_polling = false
+
+-- Called after every change to state.speedtest. Reassigned for real once the
+-- speed-test row exists further down; the callbacks below close over the
+-- variable, so they pick up the real one.
+local render_speedtest = function() end
+
+-- poll omits the keys that do not apply to the current state, so each poll
+-- replaces the table wholesale rather than merging -- otherwise a finished run
+-- would keep showing the last live sample alongside its final figures.
+local function apply_speedtest(out)
+  local fresh = {
+    supported = state.speedtest.supported,
+    state = "idle",
+    provider = "",
+    elapsed_ms = 0,
+    interface = "",
+    server = "",
+    error = "",
+  }
+  for line in (out or ""):gmatch("([^\n]+)") do
+    local k, v = line:match("^([^=]+)=(.+)$")
+    if k and v then
+      if k == "state" then fresh.state = v
+      elseif k == "provider" then fresh.provider = v
+      elseif k == "download_mbps" then fresh.download = tonumber(v)
+      elseif k == "upload_mbps" then fresh.upload = tonumber(v)
+      elseif k == "ping_ms" then fresh.ping = tonumber(v)
+      elseif k == "elapsed_ms" then fresh.elapsed_ms = tonumber(v) or 0
+      elseif k == "duration_ms" then fresh.duration_ms = tonumber(v)
+      elseif k == "responsiveness_rpm" then fresh.responsiveness = tonumber(v)
+      elseif k == "interface" then fresh.interface = v
+      elseif k == "server" then fresh.server = v
+      elseif k == "error" then fresh.error = v end
+    end
+  end
+  state.speedtest = fresh
+end
+
+local function poll_speedtest(delay)
+  if speedtest_polling then return end
+  speedtest_polling = true
+  local cmd = SPEEDTEST_ENV .. SPEEDTEST .. " poll"
+  if delay and delay > 0 then
+    cmd = "sleep " .. tostring(delay) .. "; " .. cmd
+  end
+  sbar.exec(cmd, function(out)
+    speedtest_polling = false
+    apply_speedtest(out)
+    render_speedtest()
+    -- Keep polling to completion even with the popup shut, so the result is
+    -- already there when it is reopened.
+    if state.speedtest.state == "running" then
+      poll_speedtest(POLL_SECONDS)
+    end
+  end)
+end
+
+-- `provider` is optional: omitting it leaves the choice to macwifi's own
+-- ~/.config/macwifi/config.toml. Valid values are apple, ookla, netflix, custom.
+local function start_speedtest(provider)
+  if state.speedtest.supported == false then return end
+  if state.speedtest.state == "running" then return end
+
+  local cmd = SPEEDTEST_ENV .. SPEEDTEST .. " start"
+  if provider and provider ~= "" then
+    cmd = cmd .. " " .. sh(provider)
+  end
+
+  -- Optimistic, so a UI can show the run immediately rather than a frame later.
+  state.speedtest.state = "running"
+  state.speedtest.elapsed_ms = 0
+  render_speedtest()
+
+  sbar.exec(cmd, function(out)
+    apply_speedtest(out)
+    render_speedtest()
+    if state.speedtest.state == "running" then
+      poll_speedtest(POLL_SECONDS)
+    end
+  end)
+end
+
+local function cancel_speedtest()
+  sbar.exec(SPEEDTEST_ENV .. SPEEDTEST .. " cancel", function(out)
+    apply_speedtest(out)
+    render_speedtest()
+  end)
+end
+
+-- Older macwifi builds have no speedtest subcommand; probe once so the UI can
+-- disable the control instead of failing on click.
+local function probe_speedtest()
+  sbar.exec(SPEEDTEST_ENV .. SPEEDTEST .. " capability", function(out)
+    state.speedtest.supported = (out or ""):match("supported=1") ~= nil
+    render_speedtest()
+  end)
 end
 
 -- ---------------------------------------------------------------- static UI
@@ -418,8 +565,10 @@ spacer(12)
 divider()
 spacer(6)
 
--- Speed test has no macwifi backend either.
-row("wifi.speed", pad, {
+-- Clicking Run starts a test and throws up the full-screen dial overlay. The
+-- row itself keeps reporting state, so the numbers are still here after the
+-- overlay closes.
+local speed_row = row("wifi.speed", pad, {
   icon = {
     string = "SPEED TEST",
     width = width - 2 * pad - 52,
@@ -448,6 +597,64 @@ row("wifi.speed", pad, {
   },
   background = block(26),
 })
+
+render_speedtest = function()
+  local st = state.speedtest
+  local left, left_color = "SPEED TEST", colors.muted
+  local button, button_color = "Run", colors.text
+
+  if st.supported == false then
+    left = "SPEED TEST   UNAVAILABLE"
+    button, button_color = "--", colors.muted
+  elseif st.state == "running" then
+    left = "SPEED TEST   MEASURING…"
+    button, button_color = "···", colors.gold
+  elseif st.state == "done" then
+    left = string.format("SPEED TEST   %s %.1f  %s %.1f",
+      icons.wifi.down, st.download or 0,
+      icons.wifi.up, st.upload or 0)
+    left_color = colors.text
+  elseif st.state == "failed" then
+    left = "SPEED TEST   FAILED"
+    left_color = colors.red
+  end
+
+  speed_row:set({
+    icon = { string = left, color = left_color },
+    label = { string = button, color = button_color },
+  })
+end
+
+speed_row:subscribe("mouse.entered", function()
+  speed_row:set({ label = { background = { border_color = colors.subtle, color = colors.bg2 } } })
+end)
+speed_row:subscribe("mouse.exited", function()
+  speed_row:set({ label = { background = { border_color = colors.muted, color = colors.transparent } } })
+end)
+
+speed_row:subscribe("mouse.clicked", function(env)
+  if env.BUTTON ~= "left" then return end
+  if state.speedtest.supported == false then return end
+
+  -- Sketchybar draws its popup above the overlay window, so close it first.
+  popup_open = false
+  wifi:set({ popup = { drawing = false } })
+
+  start_speedtest()
+
+  -- The overlay takes its palette from whatever theme sketchybar is running,
+  -- so it reads as part of the bar rather than a separate app.
+  local accent = string.format("0x%08x", colors.text)
+  local dim = string.format("0x%08x", colors.with_alpha(colors.base, 0.82))
+
+  -- pkill -x matches the process name only, so it cannot match the shell that
+  -- is running this line. Keeps a second click from stacking overlays.
+  sbar.exec("pkill -x speedtest_overlay >/dev/null 2>&1; "
+    .. SPEEDTEST_ENV .. OVERLAY
+    .. " --accent " .. accent
+    .. " --dim " .. dim
+    .. " >/dev/null 2>&1 &")
+end)
 
 spacer(6)
 divider()
@@ -736,3 +943,7 @@ wifi:subscribe({ "wifi_change", "system_woke" }, function()
 end)
 
 refresh(false)
+
+probe_speedtest()
+-- Adopt a run still in flight, e.g. across a config reload.
+poll_speedtest(0)

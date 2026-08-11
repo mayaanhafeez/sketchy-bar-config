@@ -31,6 +31,8 @@ local icons = {
       forget       = "󰅙",
       qr           = "󰐲",
       speed        = "󰓅",
+      down         = "󰇚",
+      up           = "󰕒",
       power        = "󰤪",
     },
     media = {
@@ -69,6 +71,8 @@ local icons = {
       forget       = "󰅙",
       qr           = "󰐲",
       speed        = "󰓅",
+      down         = "󰇚",
+      up           = "󰕒",
       power        = "󰤪",
     },
     media = {
