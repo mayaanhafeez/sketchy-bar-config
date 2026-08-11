@@ -922,6 +922,10 @@ wifi:subscribe("mouse.clicked", function(env)
   wifi:set({ popup = { drawing = "toggle" } })
   if popup_open then
     refresh(true)
+    -- macwifi may have been upgraded since the config loaded, so re-check
+    -- whether it can run a speed test now. This is the only moment the Run
+    -- button is visible, so it is the only moment the answer matters.
+    probe_speedtest()
   end
 end)
 
