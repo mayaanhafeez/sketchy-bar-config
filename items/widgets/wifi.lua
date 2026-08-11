@@ -326,28 +326,10 @@ local SPEEDTEST = sh(helpers .. "/wifi_speedtest.sh")
 local OVERLAY = sh(helpers .. "/speedtest_overlay/bin/speedtest_overlay")
 local POLL_SECONDS = 1
 
--- TEMPORARY: the installed macwifi has no `speedtest` subcommand yet, so the
--- speed-test path alone runs against the local debug build when one is present.
--- Everything else in this file keeps using the installed binary, which is the
--- signed app bundle and the one known to serve status and scan properly.
--- Once macwifi ships speedtest, delete DEBUG_MACWIFI and this whole fallback:
--- SPEEDTEST_BIN becomes MACWIFI and the prefix stops mattering.
-local function file_exists(path)
-  local handle = io.open(path, "r")
-  if handle then handle:close() return true end
-  return false
-end
-
-local DEBUG_MACWIFI = os.getenv("HOME")
-  .. "/personal/network_tui/macwifi/target/debug/macwifi"
-
-local SPEEDTEST_BIN = os.getenv("MACWIFI_BIN")
-  or (file_exists(DEBUG_MACWIFI) and DEBUG_MACWIFI)
-  or MACWIFI
-
--- Both the helper and the overlay resolve macwifi from MACWIFI_BIN, so passing
--- it in the environment of each call covers them without touching the rest.
-local SPEEDTEST_ENV = "MACWIFI_BIN=" .. sh(SPEEDTEST_BIN) .. " "
+-- The helper and the overlay both resolve macwifi the same way this file does:
+-- MACWIFI_BIN when it is set, otherwise the installed binary. They are child
+-- processes, so they inherit that from sketchybar's environment on their own.
+-- Builds without the subcommand are caught by the capability probe below.
 
 -- The overlay draws in the running theme's palette so it reads as part of the
 -- bar rather than a separate app. Every key used here exists in all ten themes;
@@ -408,7 +390,7 @@ end
 local function poll_speedtest(delay)
   if speedtest_polling then return end
   speedtest_polling = true
-  local cmd = SPEEDTEST_ENV .. SPEEDTEST .. " poll"
+  local cmd = SPEEDTEST .. " poll"
   if delay and delay > 0 then
     cmd = "sleep " .. tostring(delay) .. "; " .. cmd
   end
@@ -430,7 +412,7 @@ local function start_speedtest(provider)
   if state.speedtest.supported == false then return end
   if state.speedtest.state == "running" then return end
 
-  local cmd = SPEEDTEST_ENV .. SPEEDTEST .. " start"
+  local cmd = SPEEDTEST .. " start"
   if provider and provider ~= "" then
     cmd = cmd .. " " .. sh(provider)
   end
@@ -450,7 +432,7 @@ local function start_speedtest(provider)
 end
 
 local function cancel_speedtest()
-  sbar.exec(SPEEDTEST_ENV .. SPEEDTEST .. " cancel", function(out)
+  sbar.exec(SPEEDTEST .. " cancel", function(out)
     apply_speedtest(out)
     render_speedtest()
   end)
@@ -459,7 +441,7 @@ end
 -- Older macwifi builds have no speedtest subcommand; probe once so the UI can
 -- disable the control instead of failing on click.
 local function probe_speedtest()
-  sbar.exec(SPEEDTEST_ENV .. SPEEDTEST .. " capability", function(out)
+  sbar.exec(SPEEDTEST .. " capability", function(out)
     state.speedtest.supported = (out or ""):match("supported=1") ~= nil
     render_speedtest()
   end)
@@ -662,7 +644,7 @@ speed_row:subscribe("mouse.clicked", function(env)
   -- pkill -x matches the process name only, so it cannot match the shell that
   -- is running this line. Keeps a second click from stacking overlays.
   sbar.exec("pkill -x speedtest_overlay >/dev/null 2>&1; "
-    .. SPEEDTEST_ENV .. OVERLAY .. overlay_palette()
+    .. OVERLAY .. overlay_palette()
     .. " >/dev/null 2>&1 &")
 end)
 
