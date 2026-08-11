@@ -436,6 +436,24 @@ final class OverlayView: NSView {
 
 // MARK: - window
 
+/// The other displays get the backdrop and nothing else, so the desktop dims
+/// everywhere while the dials stay on the screen you are actually looking at.
+final class DimView: NSView {
+    init(frame: NSRect, color: NSColor, scaleFactor: CGFloat) {
+        super.init(frame: frame)
+        wantsLayer = true
+        let host = CALayer()
+        host.frame = bounds
+        host.contentsScale = scaleFactor
+        host.backgroundColor = color.cgColor
+        layer = host
+    }
+
+    required init?(coder: NSCoder) { nil }
+}
+
+// MARK: - window
+
 final class OverlayWindow: NSWindow {
     // Borderless windows refuse key status by default, which would swallow Escape.
     override var canBecomeKey: Bool { true }
@@ -446,7 +464,7 @@ final class OverlayWindow: NSWindow {
 final class Controller: NSObject, NSApplicationDelegate {
     private let options: Options
     private let tail: StreamTail
-    private var window: OverlayWindow!
+    private var windows: [OverlayWindow] = []
     private var view: OverlayView!
     private var timer: Timer?
     private var finished = false
@@ -460,15 +478,9 @@ final class Controller: NSObject, NSApplicationDelegate {
         self.tail = StreamTail(path: options.stream)
     }
 
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        let mouse = NSEvent.mouseLocation
-        let screen = NSScreen.screens.first { $0.frame.contains(mouse) }
-            ?? NSScreen.main
-            ?? NSScreen.screens[0]
-        let scaleFactor = screen.backingScaleFactor
-
-        window = OverlayWindow(contentRect: screen.frame, styleMask: .borderless,
-                               backing: .buffered, defer: false)
+    private func makeWindow(covering screen: NSScreen) -> OverlayWindow {
+        let window = OverlayWindow(contentRect: screen.frame, styleMask: .borderless,
+                                   backing: .buffered, defer: false)
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = false
@@ -476,17 +488,40 @@ final class Controller: NSObject, NSApplicationDelegate {
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         window.ignoresMouseEvents = false
         window.setFrame(screen.frame, display: true)
-
-        view = OverlayView(frame: NSRect(origin: .zero, size: screen.frame.size),
-                           options: options, scaleFactor: scaleFactor)
-        window.contentView = view
-
         window.alphaValue = 0
-        window.makeKeyAndOrderFront(nil)
+        return window
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Dials go on the screen the pointer is on; every other screen is
+        // covered too, so one bright display cannot sit next to a dimmed one.
+        let mouse = NSEvent.mouseLocation
+        let active = NSScreen.screens.first { $0.frame.contains(mouse) }
+            ?? NSScreen.main
+            ?? NSScreen.screens[0]
+
+        for screen in NSScreen.screens {
+            let scaleFactor = screen.backingScaleFactor
+            let window = makeWindow(covering: screen)
+            let bounds = NSRect(origin: .zero, size: screen.frame.size)
+
+            if screen === active {
+                view = OverlayView(frame: bounds, options: options,
+                                   scaleFactor: scaleFactor)
+                window.contentView = view
+                window.makeKeyAndOrderFront(nil)
+            } else {
+                window.contentView = DimView(frame: bounds, color: options.palette.dim,
+                                             scaleFactor: scaleFactor)
+                window.orderFront(nil)
+            }
+            windows.append(window)
+        }
+
         NSApp.activate(ignoringOtherApps: true)
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.18
-            window.animator().alphaValue = 1
+            for window in windows { window.animator().alphaValue = 1 }
         }
 
         NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown]) {
@@ -640,7 +675,7 @@ final class Controller: NSObject, NSApplicationDelegate {
         timer?.invalidate()
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.15
-            window.animator().alphaValue = 0
+            for window in windows { window.animator().alphaValue = 0 }
         }, completionHandler: {
             NSApp.terminate(nil)
         })

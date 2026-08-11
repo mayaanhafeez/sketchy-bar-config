@@ -916,7 +916,15 @@ nets_header:set({ drawing = false })
 
 -- ---------------------------------------------------------------- events
 wifi:subscribe("mouse.clicked", function(env)
+  -- Right click opens the full macwifi TUI. There is no `mouse.right` event in
+  -- sketchybar -- the button arrives as $BUTTON on mouse.clicked -- so this has
+  -- to branch here rather than be its own subscription.
+  if env.BUTTON == "right" then
+    sbar.exec(sh(config_dir .. "/helpers/wifi_launch.command"))
+    return
+  end
   if env.BUTTON ~= "left" then return end
+
   local drawing = wifi:query().popup.drawing
   popup_open = drawing == "off"
   wifi:set({ popup = { drawing = "toggle" } })
@@ -927,11 +935,6 @@ wifi:subscribe("mouse.clicked", function(env)
     -- button is visible, so it is the only moment the answer matters.
     probe_speedtest()
   end
-end)
-
--- Right click still opens the full macwifi TUI.
-wifi:subscribe("mouse.right", function()
-  sbar.exec("'" .. config_dir .. "/helpers/wifi_launch.command'")
 end)
 
 wifi:subscribe({ "wifi_change", "system_woke" }, function()
