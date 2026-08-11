@@ -349,6 +349,23 @@ local SPEEDTEST_BIN = os.getenv("MACWIFI_BIN")
 -- it in the environment of each call covers them without touching the rest.
 local SPEEDTEST_ENV = "MACWIFI_BIN=" .. sh(SPEEDTEST_BIN) .. " "
 
+-- The overlay draws in the running theme's palette so it reads as part of the
+-- bar rather than a separate app. Every key used here exists in all ten themes;
+-- the accent names carry the same meaning throughout (foam teal, iris purple,
+-- love red), and collapse to greys on the monochrome ones.
+local function overlay_palette()
+  local function hex(color)
+    return string.format("0x%08x", color)
+  end
+  return " --accent-down " .. hex(colors.foam)
+    .. " --accent-up " .. hex(colors.iris)
+    .. " --value " .. hex(colors.text)
+    .. " --muted " .. hex(colors.muted)
+    .. " --title-color " .. hex(colors.subtle)
+    .. " --fail " .. hex(colors.love)
+    .. " --dim " .. hex(colors.with_alpha(colors.base, 0.82))
+end
+
 local speedtest_polling = false
 
 -- Called after every change to state.speedtest. Reassigned for real once the
@@ -642,17 +659,10 @@ speed_row:subscribe("mouse.clicked", function(env)
 
   start_speedtest()
 
-  -- The overlay takes its palette from whatever theme sketchybar is running,
-  -- so it reads as part of the bar rather than a separate app.
-  local accent = string.format("0x%08x", colors.text)
-  local dim = string.format("0x%08x", colors.with_alpha(colors.base, 0.82))
-
   -- pkill -x matches the process name only, so it cannot match the shell that
   -- is running this line. Keeps a second click from stacking overlays.
   sbar.exec("pkill -x speedtest_overlay >/dev/null 2>&1; "
-    .. SPEEDTEST_ENV .. OVERLAY
-    .. " --accent " .. accent
-    .. " --dim " .. dim
+    .. SPEEDTEST_ENV .. OVERLAY .. overlay_palette()
     .. " >/dev/null 2>&1 &")
 end)
 

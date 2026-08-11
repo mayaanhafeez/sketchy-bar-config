@@ -15,10 +15,18 @@
 //                     currently on, resolved from macwifi.
 //   --linger          Seconds to hold the final figures before closing.
 //                     0 keeps the overlay up until it is dismissed.
-//   --accent          Dial colour, "#rrggbb" or "0xaarrggbb".
-//   --dim             Backdrop colour, alpha included, e.g. "0xd0191724".
-//                     The Wi-Fi widget passes both of these from the active
-//                     sketchybar theme, so the overlay matches the bar.
+// Colours are "#rrggbb" or "0xaarrggbb". The Wi-Fi widget passes the whole set
+// from the active sketchybar theme, so the overlay matches the bar:
+//
+//   --accent          Both dials at once. Shorthand for the two below.
+//   --accent-down     Download dial: arc, needle, and its track/ticks, which
+//                     are drawn as faded versions of it.
+//   --accent-up       Upload dial, same deal.
+//   --value           The large Mbps numbers.
+//   --muted           Unit and caption text, and the status line.
+//   --title-color     The network name above the dials.
+//   --fail            Status line when a run fails.
+//   --dim             Backdrop, alpha included, e.g. "0xd1191724".
 //   --exit-when-idle  Close if the stream produces nothing at all, instead of
 //                     waiting for a run to appear.
 //
@@ -31,14 +39,36 @@ import QuartzCore
 
 // MARK: - options
 
+/// One colour per role rather than a single accent, so a theme's own palette
+/// comes through. Each dial's track and ticks are derived from its arc colour,
+/// which keeps a dial coherent whatever it is tinted.
+struct Palette {
+    var down = NSColor(calibratedWhite: 0.96, alpha: 1)
+    var up = NSColor(calibratedWhite: 0.96, alpha: 1)
+    var value = NSColor(calibratedWhite: 0.96, alpha: 1)
+    var muted = NSColor(calibratedWhite: 0.96, alpha: 0.55)
+    var title = NSColor(calibratedWhite: 0.96, alpha: 0.75)
+    var fail = NSColor(calibratedRed: 0.92, green: 0.44, blue: 0.57, alpha: 1)
+    var dim = NSColor.black.withAlphaComponent(0.78)
+
+    /// Back-compat for a single --accent: tint everything that is not
+    /// deliberately subdued.
+    mutating func applyAccent(_ color: NSColor) {
+        down = color
+        up = color
+        value = color
+        muted = color.withAlphaComponent(0.55)
+        title = color.withAlphaComponent(0.75)
+    }
+}
+
 struct Options {
     var stream: String = NSString(string: "~/Library/Caches/sketchybar/speedtest/run.jsonl")
         .expandingTildeInPath
     /// nil means "resolve the current SSID at launch".
     var title: String? = nil
     var linger: Double = 8
-    var accent: NSColor = NSColor(calibratedWhite: 0.96, alpha: 1)
-    var dim: NSColor = NSColor.black.withAlphaComponent(0.78)
+    var palette = Palette()
     var exitWhenIdle: Bool = false
 
     static func parse(_ argv: [String]) -> Options {
@@ -55,9 +85,21 @@ struct Options {
             case "--linger":
                 if let v = next, let d = Double(v) { opts.linger = d; i += 1 }
             case "--accent":
-                if let v = next, let c = NSColor(hex: v) { opts.accent = c; i += 1 }
+                if let v = next, let c = NSColor(hex: v) { opts.palette.applyAccent(c); i += 1 }
+            case "--accent-down":
+                if let v = next, let c = NSColor(hex: v) { opts.palette.down = c; i += 1 }
+            case "--accent-up":
+                if let v = next, let c = NSColor(hex: v) { opts.palette.up = c; i += 1 }
+            case "--value":
+                if let v = next, let c = NSColor(hex: v) { opts.palette.value = c; i += 1 }
+            case "--muted":
+                if let v = next, let c = NSColor(hex: v) { opts.palette.muted = c; i += 1 }
+            case "--title-color":
+                if let v = next, let c = NSColor(hex: v) { opts.palette.title = c; i += 1 }
+            case "--fail":
+                if let v = next, let c = NSColor(hex: v) { opts.palette.fail = c; i += 1 }
             case "--dim":
-                if let v = next, let c = NSColor(hex: v) { opts.dim = c; i += 1 }
+                if let v = next, let c = NSColor(hex: v) { opts.palette.dim = c; i += 1 }
             case "--exit-when-idle":
                 opts.exitWhenIdle = true
             default:
@@ -162,14 +204,13 @@ final class Gauge {
     private let sweep: CGFloat = 3 * .pi / 2
 
     private let radius: CGFloat
-    private let accent: NSColor
     private var scale: Double = 10
 
     private(set) var value: Double = 0
 
-    init(caption: String, radius: CGFloat, accent: NSColor, scaleFactor: CGFloat) {
+    init(caption: String, radius: CGFloat, arc arcColor: NSColor, value valueColor: NSColor,
+         muted: NSColor, scaleFactor: CGFloat) {
         self.radius = radius
-        self.accent = accent
 
         let side = (radius + 26) * 2
         root.bounds = CGRect(x: 0, y: 0, width: side, height: side)
@@ -185,18 +226,18 @@ final class Gauge {
         }
 
         track.path = arc(center: center, radius: radius, from: startAngle, sweep: sweep)
-        track.strokeColor = accent.withAlphaComponent(0.16).cgColor
+        track.strokeColor = arcColor.withAlphaComponent(0.16).cgColor
         track.lineWidth = 3
         track.lineCap = .round
 
         progress.path = track.path
-        progress.strokeColor = accent.cgColor
+        progress.strokeColor = arcColor.cgColor
         progress.lineWidth = 3
         progress.lineCap = .round
         progress.strokeEnd = 0
 
         ticks.path = tickMarks(center: center)
-        ticks.strokeColor = accent.withAlphaComponent(0.38).cgColor
+        ticks.strokeColor = arcColor.withAlphaComponent(0.38).cgColor
         ticks.lineWidth = 1
         ticks.lineCap = .butt
 
@@ -206,7 +247,7 @@ final class Gauge {
         needlePath.move(to: CGPoint(x: center.x + 8, y: center.y))
         needlePath.addLine(to: CGPoint(x: center.x + radius - 20, y: center.y))
         needle.path = needlePath
-        needle.strokeColor = accent.cgColor
+        needle.strokeColor = arcColor.cgColor
         needle.lineWidth = 2
         needle.lineCap = .round
 
@@ -215,7 +256,7 @@ final class Gauge {
         valueLabel.font = mono
         valueLabel.fontSize = 34
         valueLabel.alignmentMode = .center
-        valueLabel.foregroundColor = accent.cgColor
+        valueLabel.foregroundColor = valueColor.cgColor
         valueLabel.contentsScale = scaleFactor
         valueLabel.frame = CGRect(x: 0, y: center.y - 6, width: side, height: 44)
         root.addSublayer(valueLabel)
@@ -224,7 +265,7 @@ final class Gauge {
         unitLabel.font = Gauge.font(size: 11, weight: .regular)
         unitLabel.fontSize = 11
         unitLabel.alignmentMode = .center
-        unitLabel.foregroundColor = accent.withAlphaComponent(0.55).cgColor
+        unitLabel.foregroundColor = muted.cgColor
         unitLabel.contentsScale = scaleFactor
         unitLabel.frame = CGRect(x: 0, y: center.y - 22, width: side, height: 16)
         root.addSublayer(unitLabel)
@@ -233,7 +274,7 @@ final class Gauge {
         captionLabel.font = Gauge.font(size: 11, weight: .semibold)
         captionLabel.fontSize = 11
         captionLabel.alignmentMode = .center
-        captionLabel.foregroundColor = accent.withAlphaComponent(0.65).cgColor
+        captionLabel.foregroundColor = muted.cgColor
         captionLabel.contentsScale = scaleFactor
         captionLabel.frame = CGRect(x: 0, y: center.y - radius - 24, width: side, height: 16)
         root.addSublayer(captionLabel)
@@ -317,15 +358,20 @@ final class OverlayView: NSView {
     private let dim = CALayer()
     private let titleLabel = CATextLayer()
     private let statusLabel = CATextLayer()
+    private let palette: Palette
     let download: Gauge
     let upload: Gauge
 
     init(frame: NSRect, options: Options, scaleFactor: CGFloat) {
         let radius: CGFloat = min(140, max(96, frame.height * 0.13))
-        download = Gauge(caption: "DOWNLOAD", radius: radius,
-                         accent: options.accent, scaleFactor: scaleFactor)
-        upload = Gauge(caption: "UPLOAD", radius: radius,
-                       accent: options.accent, scaleFactor: scaleFactor)
+        let palette = options.palette
+        self.palette = palette
+        download = Gauge(caption: "DOWNLOAD", radius: radius, arc: palette.down,
+                         value: palette.value, muted: palette.muted,
+                         scaleFactor: scaleFactor)
+        upload = Gauge(caption: "UPLOAD", radius: radius, arc: palette.up,
+                       value: palette.value, muted: palette.muted,
+                       scaleFactor: scaleFactor)
         super.init(frame: frame)
 
         wantsLayer = true
@@ -335,7 +381,7 @@ final class OverlayView: NSView {
         layer = host
 
         dim.frame = bounds
-        dim.backgroundColor = options.dim.cgColor
+        dim.backgroundColor = palette.dim.cgColor
         dim.contentsScale = scaleFactor
         host.addSublayer(dim)
 
@@ -352,7 +398,7 @@ final class OverlayView: NSView {
             ?? NSFont.monospacedSystemFont(ofSize: 12, weight: .semibold)
         titleLabel.fontSize = 12
         titleLabel.alignmentMode = .center
-        titleLabel.foregroundColor = options.accent.withAlphaComponent(0.75).cgColor
+        titleLabel.foregroundColor = palette.title.cgColor
         titleLabel.contentsScale = scaleFactor
         titleLabel.frame = CGRect(x: 0, y: center.y + radius + 62,
                                   width: bounds.width, height: 20)
@@ -363,7 +409,7 @@ final class OverlayView: NSView {
             ?? NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
         statusLabel.fontSize = 10
         statusLabel.alignmentMode = .center
-        statusLabel.foregroundColor = options.accent.withAlphaComponent(0.42).cgColor
+        statusLabel.foregroundColor = palette.muted.cgColor
         statusLabel.contentsScale = scaleFactor
         statusLabel.frame = CGRect(x: 0, y: center.y - radius - 84,
                                    width: bounds.width, height: 16)
@@ -379,10 +425,11 @@ final class OverlayView: NSView {
         CATransaction.commit()
     }
 
-    func setStatus(_ text: String) {
+    func setStatus(_ text: String, failed: Bool = false) {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         statusLabel.string = text
+        statusLabel.foregroundColor = (failed ? palette.fail : palette.muted).cgColor
         CATransaction.commit()
     }
 }
@@ -538,7 +585,7 @@ final class Controller: NSObject, NSApplicationDelegate {
                 finish()
             case "failed":
                 let message = (event["error"] as? String) ?? "speed test failed"
-                view.setStatus(message.uppercased())
+                view.setStatus(message.uppercased(), failed: true)
                 finish()
             default:
                 break
