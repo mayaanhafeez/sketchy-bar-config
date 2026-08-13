@@ -24,7 +24,7 @@ local battery_pct = sbar.add("item", {
   },
   label = {
     string = "?%",
-    width = 100,
+    width = 110,
     align = "right"
   },
 })
@@ -38,7 +38,7 @@ local remaining_time = sbar.add("item", {
   },
   label = {
     string = "??:??h",
-    width = 100,
+    width = 110,
     align = "right"
   },
 })

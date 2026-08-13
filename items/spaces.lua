@@ -8,6 +8,7 @@ sbar.add("event", "hyprspace_workspace_change")
 
 for _, sid in ipairs(workspace_ids) do
   local space = sbar.add("item", "space." .. sid, {
+    width = 22,
     icon = {
       font = { family = settings.font.numbers },
       string = sid,
