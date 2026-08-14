@@ -11,6 +11,8 @@ set -uo pipefail
 ssid=$1
 if [ -n "${PASS:-}" ]; then
   /usr/local/bin/macwifi connect "$ssid" "$PASS"
-else
-  /usr/local/bin/macwifi connect "$ssid"
+elif ! /usr/local/bin/macwifi connect "$ssid"; then
+  # macwifi had no saved credential for this one (or the join failed). Say so
+  # on stdout so the widget can fall back to asking.
+  echo NEEDPASS
 fi

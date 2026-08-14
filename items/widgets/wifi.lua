@@ -251,49 +251,64 @@ local refresh
 local schedule_refresh
 
 -- ---------------------------------------------------------------- actions
-local function join(ssid, password)
+local function clear_pending()
+  state.pending = ""
+  state.pending_kind = ""
+  render_networks()
+end
+
+-- Without a password macwifi joins from its own saved credential. It reports
+-- back that it had none by printing NEEDPASS, which only happens for a secured
+-- network we asked it to join blind.
+local function join(ssid, password, on_needs_password)
   local cmd = helpers .. "/wifi_join.command " .. sh(ssid)
   if password then
     cmd = "PASS=" .. sh(password) .. " " .. cmd
   end
-  sbar.exec(cmd, function() schedule_refresh(4) end)
+  sbar.exec(cmd, function(out)
+    if on_needs_password and strip(out or "") == "NEEDPASS" then
+      on_needs_password()
+    else
+      schedule_refresh(4)
+    end
+  end)
 end
 
-local function connect_network(ssid, secured)
+-- Ask for a password and hand it to macwifi, which saves it for next time.
+-- Cancelling just leaves the row as it was.
+local function prompt_and_join(ssid)
+  sbar.exec(
+    'osascript -e \'set pw to text returned of (display dialog "Password for '
+      .. escape_dialog(ssid)
+      .. ':" default answer "" with hidden answer)\'',
+    function(pw)
+      pw = strip(pw)
+      if pw ~= "" then
+        join(ssid, pw)
+      else
+        clear_pending()
+      end
+    end
+  )
+end
+
+local function connect_network(ssid, secured, known)
   if state.pending ~= "" then return end
   state.pending = ssid
   state.pending_kind = "connect"
   render_networks()
 
+  -- Let macwifi own the join. An open network needs nothing from us, and for
+  -- one macwifi already knows it reads its own keychain item silently -- which
+  -- is precisely what reading that item through `security` here could not do,
+  -- since the item trusts macwifi.app alone.
   if not secured then
     join(ssid, nil)
-    return
+  elseif known then
+    join(ssid, nil, function() prompt_and_join(ssid) end)
+  else
+    prompt_and_join(ssid)
   end
-
-  -- Reuse macwifi's own login-keychain cache when we have one (silent path).
-  sbar.exec("security find-generic-password -s macwifi-wifi -a " .. sh(ssid) .. " -w 2>/dev/null", function(pw)
-    pw = strip(pw)
-    if pw ~= "" then
-      join(ssid, pw)
-      return
-    end
-    -- Otherwise ask; cancelling just leaves the row as it was.
-    sbar.exec(
-      'osascript -e \'set pw to text returned of (display dialog "Password for '
-        .. escape_dialog(ssid)
-        .. ':" default answer "" with hidden answer)\'',
-      function(pw)
-        pw = strip(pw)
-        if pw ~= "" then
-          join(ssid, pw)
-        else
-          state.pending = ""
-          state.pending_kind = ""
-          render_networks()
-        end
-      end
-    )
-  end)
 end
 
 local function disconnect_network()
@@ -777,7 +792,7 @@ local function add_network_row(index, net)
     if connected then
       disconnect_network()
     else
-      connect_network(net.ssid, is_secured(net.sec))
+      connect_network(net.ssid, is_secured(net.sec), net.known)
     end
   end)
 end
