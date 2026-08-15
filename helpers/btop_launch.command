@@ -1,16 +1,17 @@
 #!/bin/bash
-# Launches btop in a centered, generously sized kitty window that fully
-# quits when btop exits.
-
+# Launches macwifi in a centered Ghostty window that fully quits on exit.
 DIR="$(cd "$(dirname "$0")" && pwd)"
+GHOSTTY="/Applications/Ghostty.app/Contents/MacOS/ghostty"
 
-# Desired window size in logical points.
+# Window size in CELLS (Ghostty has no pixel sizing).
+COLS=120
+ROWS=32
+
+# The same window's measured size in points — used only for the centering math.
+# Re-measure these if you change font-family or font-size. See note below.
 W=1100
 H=740
 
-# Primary display size in logical points (the one with the menu bar). Using the
-# primary display only ensures we center on it rather than across the combined
-# bounding box of all connected screens. Falls back to a sane default on failure.
 read -r SW SH < <(osascript -l JavaScript -e 'ObjC.import("AppKit"); var s=$.NSScreen.screens.objectAtIndex(0).frame; s.size.width + " " + s.size.height' 2>/dev/null)
 [ -z "$SW" ] && SW=1280
 [ -z "$SH" ] && SH=832
@@ -18,13 +19,12 @@ read -r SW SH < <(osascript -l JavaScript -e 'ObjC.import("AppKit"); var s=$.NSS
 X=$(( (SW - W) / 2 ))
 Y=$(( (SH - H) / 2 ))
 
-exec kitty \
-  --override close_on_child_death=yes \
-  --override macos_quit_when_last_window_closed=yes \
-  --override remember_window_size=no \
-  --override remember_window_position=no \
-  --override initial_window_width="$W" \
-  --override initial_window_height="$H" \
-  --position "${X}x${Y}" \
-  --title btop \
-  -e btop
+exec "$GHOSTTY" \
+  --window-save-state=never \
+  --window-width="$COLS" \
+  --window-height="$ROWS" \
+  --window-position-x="$X" \
+  --window-position-y="$Y" \
+  --title=btop \
+  --font-size=15 \
+  -e "btop"
