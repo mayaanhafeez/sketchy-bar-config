@@ -1,5 +1,5 @@
 return {
-  theme = "ristretto", -- available: rose_pine, rose_pine_moon, catppuccin_mocha, tokyo_night, tokyo_night_storm, tomorrow_night_burns, andromeda, hinterlands, matte_black, vanta_black
+  theme = "drive", -- available: rose_pine, rose_pine_moon, catppuccin_mocha, tokyo_night, tokyo_night_storm, tomorrow_night_burns, andromeda, hinterlands, matte_black, vanta_black, drive
 
   paddings = 3,
   group_paddings = 5,
