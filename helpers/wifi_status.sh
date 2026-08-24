@@ -9,11 +9,25 @@
 #   txrate  Mbps                         hwaddr  MAC of the interface
 set -uo pipefail
 
-out=$(/usr/local/bin/macwifi status 2>/dev/null)
-if [ -z "$out" ]; then
-  printf 'powered=0\nssid=-\n'
-  exit 0
+if [ -n "${MACWIFI_BIN:-}" ]; then
+  bin=$MACWIFI_BIN
+elif [ -x /usr/local/bin/macwifi ]; then
+  bin=/usr/local/bin/macwifi
+else
+  bin=$(command -v macwifi 2>/dev/null || true)
 fi
+
+if [ -z "$bin" ] || [ ! -x "$bin" ]; then
+  printf 'error=macwifi not installed\n'
+  exit 1
+fi
+
+if ! out=$($bin status 2>&1) || [ -z "$out" ]; then
+  printf 'error=%s\n' "${out:-macwifi status returned no data}"
+  exit 1
+fi
+
+printf 'ok=1\n'
 
 printf '%s\n' "$out" | awk '
 {

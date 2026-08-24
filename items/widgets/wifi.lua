@@ -244,6 +244,8 @@ local state = {
 
 local popup_open = false
 local scheduler_active = false
+local scan_active = false
+local scan_again = false
 
 -- ------------------------------------------------------- forward references
 local render_networks
@@ -266,8 +268,12 @@ local function join(ssid, password, on_needs_password)
     cmd = "PASS=" .. sh(password) .. " " .. cmd
   end
   sbar.exec(cmd, function(out)
-    if on_needs_password and strip(out or "") == "NEEDPASS" then
+    local result = strip(out or "")
+    if on_needs_password and result == "NEEDPASS" then
       on_needs_password()
+    elseif result == "BUSY" then
+      clear_pending()
+      schedule_refresh(1)
     else
       schedule_refresh(4)
     end
@@ -846,6 +852,7 @@ end
 
 -- ---------------------------------------------------------------- refresh
 local function apply_status(out)
+  if not (out or ""):match("^ok=1\n") then return false end
   for line in (out or ""):gmatch("([^\n]+)") do
     local k, v = line:match("^([^=]+)=(.+)$")
     if k and v then
@@ -860,15 +867,17 @@ local function apply_status(out)
       elseif k == "hwaddr" then state.hwaddr = v end
     end
   end
+  return true
 end
 
 local function apply_scan(out)
-  state.networks = {}
+  if not (out or ""):match("^ok=1\n") then return false end
+  local networks = {}
   for line in (out or ""):gmatch("([^\n]+)") do
     local ssid, rssi, ch, sec, bssid, known =
       line:match("^(.-)\t(.*)\t(.*)\t(.*)\t(.*)\t(.*)$")
     if ssid then
-      state.networks[#state.networks + 1] = {
+      networks[#networks + 1] = {
         ssid = ssid,
         rssi = tonumber(rssi) or -100,
         ch = tonumber(ch) or 0,
@@ -878,6 +887,8 @@ local function apply_scan(out)
       }
     end
   end
+  state.networks = networks
+  return true
 end
 
 local function render_all()
@@ -888,18 +899,26 @@ local function render_all()
 end
 
 local function scan_networks()
+  if scan_active then
+    scan_again = true
+    return
+  end
+  scan_active = true
   state.scanning = true
   sbar.exec(helpers .. "/wifi_scan.sh", function(out)
+    scan_active = false
     state.scanning = false
-    apply_scan(out)
-    render_networks()
+    if apply_scan(out) then render_networks() end
+    if scan_again then
+      scan_again = false
+      scan_networks()
+    end
   end)
 end
 
 local function ping_status()
   sbar.exec(helpers .. "/wifi_status.sh", function(out)
-    apply_status(out)
-    render_all()
+    if apply_status(out) then render_all() end
   end)
 end
 
@@ -917,8 +936,7 @@ schedule_refresh = function(sec)
     scheduler_active = false
     state.pending = ""
     state.pending_kind = ""
-    apply_status(out)
-    render_all()
+    if apply_status(out) then render_all() end
     scan_networks()
   end)
 end

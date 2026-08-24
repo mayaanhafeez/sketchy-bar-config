@@ -8,9 +8,29 @@
 # fields are cut by position — SSIDs may contain spaces.
 set -uo pipefail
 
-pref=$(/usr/local/bin/macwifi preferred 2>/dev/null)
-scan=$(/usr/local/bin/macwifi scan 2>/dev/null)
-[ -z "$scan" ] && exit 0
+if [ -n "${MACWIFI_BIN:-}" ]; then
+  bin=$MACWIFI_BIN
+elif [ -x /usr/local/bin/macwifi ]; then
+  bin=/usr/local/bin/macwifi
+else
+  bin=$(command -v macwifi 2>/dev/null || true)
+fi
+
+if [ -z "$bin" ] || [ ! -x "$bin" ]; then
+  printf 'error=macwifi not installed\n'
+  exit 1
+fi
+
+if ! pref=$($bin preferred 2>&1); then
+  printf 'error=%s\n' "$pref"
+  exit 1
+fi
+if ! scan=$($bin scan 2>&1) || [ -z "$scan" ]; then
+  printf 'error=%s\n' "${scan:-macwifi scan returned no data}"
+  exit 1
+fi
+
+printf 'ok=1\n'
 
 known=$(mktemp)
 trap 'rm -f "$known"' EXIT
