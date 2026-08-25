@@ -58,9 +58,20 @@ end
 
 local divider1 = divider("widgets.codex.divider1")
 local limits_title = row("widgets.codex.limits.title", { icon = "LIMITS", icon_color = colors.grey, icon_font = font(9, "Bold") })
-local weekly_head = row("widgets.codex.weekly", { icon = "Weekly", icon_font = font(13), label = "--", label_width = VALUE_W })
-local weekly_meter = slider("widgets.codex.weekly.meter", 0, 0)
-local weekly_reset = row("widgets.codex.weekly.reset", { icon = "", icon_color = colors.grey, icon_font = font(9.5) })
+
+-- Codex enforces a rolling 5-hour cap alongside the weekly one, so both get a
+-- meter here. Rows are added in this order because a popup lays its items out
+-- in the order they were created.
+local LIMITS = { { key = "session", title = "Session" }, { key = "weekly", title = "Weekly" } }
+local meters = {}
+for _, limit in ipairs(LIMITS) do
+  local base = "widgets.codex." .. limit.key
+  meters[limit.key] = {
+    head = row(base, { icon = limit.title, icon_font = font(13), label = "--", label_width = VALUE_W }),
+    meter = slider(base .. ".meter", 0, 0),
+    reset = row(base .. ".reset", { icon = "", icon_color = colors.grey, icon_font = font(9.5) }),
+  }
+end
 local divider_limits = divider("widgets.codex.divider.limits")
 local days_title = row("widgets.codex.days.title", { icon = "TOKENS BY DAY", icon_color = colors.grey, icon_font = font(9, "Bold") })
 local day_rows = {}
@@ -78,7 +89,13 @@ for i = 1, MODEL_ROWS do
 end
 local footer = spacer("widgets.codex.footer")
 
-local content = { divider1, limits_title, weekly_head, weekly_meter, weekly_reset, divider_limits, days_title, divider2, models_title, footer }
+local content = { divider1, limits_title, divider_limits, days_title, divider2, models_title, footer }
+for _, limit in ipairs(LIMITS) do
+  local entry = meters[limit.key]
+  table.insert(content, entry.head)
+  table.insert(content, entry.meter)
+  table.insert(content, entry.reset)
+end
 for _, entry in ipairs(day_rows) do table.insert(content, entry) end
 for _, entry in ipairs(model_rows) do table.insert(content, entry) end
 
@@ -86,13 +103,18 @@ local function render(data)
   _G.set_codex_plan(data.plan and string.upper(data.plan) or "OPENCODE")
   -- A slow refresh must not repaint Codex rows after switching back to Claude.
   if _G.ai_tab ~= "codex" then return end
-  local weekly = tonumber(data.weekly_pct)
-  local show_weekly = weekly ~= nil
-  limits_title:set({ drawing = show_weekly })
-  weekly_head:set({ drawing = show_weekly, label = { string = weekly and weekly .. "%" or "--" } })
-  weekly_meter:set({ drawing = show_weekly, slider = { percentage = weekly or 0 } })
-  weekly_reset:set({ drawing = show_weekly and data.weekly_reset ~= nil, icon = { string = data.weekly_reset and "Resets in " .. data.weekly_reset or "" } })
-  divider_limits:set({ drawing = show_weekly })
+  local any_limit = false
+  for _, limit in ipairs(LIMITS) do
+    local entry = meters[limit.key]
+    local pct = tonumber(data[limit.key .. "_pct"])
+    local reset = data[limit.key .. "_reset"]
+    any_limit = any_limit or pct ~= nil
+    entry.head:set({ drawing = pct ~= nil, label = { string = pct and pct .. "%" or "--" } })
+    entry.meter:set({ drawing = pct ~= nil, slider = { percentage = pct or 0 } })
+    entry.reset:set({ drawing = pct ~= nil and reset ~= nil, icon = { string = reset and "Resets in " .. reset or "" } })
+  end
+  limits_title:set({ drawing = any_limit })
+  divider_limits:set({ drawing = any_limit })
   for i = 1, DAY_ROWS do
     local label, value, pct = (data["day." .. i] or ""):match("^([^|]*)|([^|]*)|(%d+)$")
     local today = label == "Today"

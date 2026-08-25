@@ -348,6 +348,9 @@ local TAB_W = CONTENT / 2 - TAB_GAP / 2
 local function add_switcher(name)
   return sbar.add("item", name, {
     position = popup_pos,
+    -- Popup items only process events while shown, so the tab would refuse to
+    -- switch from the CLI unless the popup happened to be open at the time.
+    updates = true,
     padding_left = PAD,
     padding_right = PAD,
     icon = {
@@ -445,9 +448,12 @@ for i = 1, MODEL_ROWS do
   model_rows[i] = add_block_row("widgets.claude.model." .. i)
 end
 
-add_spacer("widgets.claude.footer")
+-- The footer hides with the rest of the tab. Left drawn it would sit between
+-- the switcher and the Codex rows below it -- popup rows stack in creation
+-- order -- padding the Codex tab one row lower than the Claude one.
+local footer = add_spacer("widgets.claude.footer")
 
-local claude_content = { divider1, limits_title, divider2, days_title, divider3, models_title }
+local claude_content = { divider1, limits_title, divider2, days_title, divider3, models_title, footer }
 for _, row in pairs(meters) do
   table.insert(claude_content, row.head)
   table.insert(claude_content, row.meter)
@@ -634,7 +640,9 @@ local function toggle_tab()
 end
 
 switcher:subscribe("mouse.clicked", toggle_tab)
--- Also reachable from the CLI: `sketchybar --trigger ai_tab_toggle`.
+-- Also reachable from the CLI: `sketchybar --trigger ai_tab_toggle`, which
+-- needs the custom event to exist before anything can subscribe to it.
+sbar.add("event", "ai_tab_toggle")
 switcher:subscribe("ai_tab_toggle", toggle_tab)
 
 --------------------------------------------------------------------------

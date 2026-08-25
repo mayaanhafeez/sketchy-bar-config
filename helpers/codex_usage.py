@@ -26,7 +26,15 @@ def human_duration(seconds):
     return "%dm" % max(minutes, 1)
 
 
-def fetch_weekly_limit():
+# The usage endpoint reports one window per cap Codex enforces: the rolling
+# 5-hour window in primary_window, the weekly one in secondary_window. Both are
+# keyed off limit_window_seconds rather than the field name, so a window that
+# moves between the two slots still lands on the right row.
+LIMIT_WINDOWS = (("session", 18000), ("weekly", 604800))
+
+
+def fetch_limits():
+    """Return {name: (used_percent, reset_after_seconds)} for each known cap."""
     try:
         with open(os.path.join(HOME, ".codex", "auth.json")) as handle:
             auth = json.load(handle)
@@ -37,10 +45,26 @@ def fetch_weekly_limit():
             headers["ChatGPT-Account-Id"] = account
         request = Request("https://chatgpt.com/backend-api/wham/usage", headers=headers)
         with urlopen(request, timeout=10) as response:
-            window = json.load(response)["rate_limit"]["primary_window"]
-        return window.get("used_percent"), window.get("reset_after_seconds")
+            rate_limit = json.load(response)["rate_limit"]
     except (OSError, KeyError, TypeError, ValueError):
-        return None, None
+        return {}
+
+    windows = []
+    for key in ("primary_window", "secondary_window"):
+        window = rate_limit.get(key)
+        if isinstance(window, dict) and window.get("used_percent") is not None:
+            windows.append(window)
+
+    limits = {}
+    for name, span in LIMIT_WINDOWS:
+        if not windows:
+            break
+        # Nearest window length wins, so an exact match is picked even when the
+        # API reports a slightly different span than the documented one.
+        window = min(windows, key=lambda w: abs((w.get("limit_window_seconds") or 0) - span))
+        windows.remove(window)
+        limits[name] = (window.get("used_percent"), window.get("reset_after_seconds"))
+    return limits
 
 
 def fetch_plan():
@@ -84,11 +108,11 @@ def main():
     if plan:
         print("plan=%s" % plan)
 
-    weekly_percent, weekly_reset = fetch_weekly_limit()
-    if weekly_percent is not None:
-        print("weekly_pct=%d" % round(weekly_percent))
-    if weekly_reset is not None:
-        print("weekly_reset=%s" % human_duration(weekly_reset))
+    for name, (percent, reset) in fetch_limits().items():
+        if percent is not None:
+            print("%s_pct=%d" % (name, round(percent)))
+        if reset is not None:
+            print("%s_reset=%s" % (name, human_duration(reset)))
 
     if not os.path.isfile(DATABASE):
         print("days=0\nmodels=0")
