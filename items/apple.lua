@@ -15,4 +15,4 @@ local apple = sbar.add("item", {
   click_script = "$CONFIG_DIR/helpers/menus/bin/menus -s 0"
 })
 
-sbar.add("item", { width = 7 })
+sbar.add("item", { width = 1 })
