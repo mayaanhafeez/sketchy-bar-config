@@ -172,10 +172,12 @@ def pick_window(raw, *needles):
 
 
 def as_percent(val):
+    """The usage endpoint reports these fields as whole percents already --
+    `utilization: 5.0` means 5%, not 500%. Reading a small value as a fraction
+    instead would turn a session sitting at 1% into a full bar."""
     if not isinstance(val, (int, float)):
         return None
-    pct = val * 100.0 if 0.0 <= val <= 1.0 else float(val)
-    return max(0, min(100, int(round(pct))))
+    return max(0, min(100, int(round(float(val)))))
 
 
 def window_percent(win):
