@@ -1,5 +1,6 @@
 local icons = require("icons")
 local colors = require("colors")
+local keys = require("helpers.popup_keys")
 
 local whitelist = { ["Spotify"] = true,
                     ["Music"] = true    };
@@ -109,10 +110,20 @@ media_cover:subscribe("mouse.exited", function(env)
   animate_detail(false)
 end)
 
+-- The cover art popup has no rows to walk, so escape is all it binds.
+local nav = keys.bind("media", function(key)
+  if key ~= "escape" then return end
+  media_cover:set({ popup = { drawing = false } })
+  keys.stop_all()
+end)
+
 media_cover:subscribe("mouse.clicked", function(env)
+  local drawing = media_cover:query().popup.drawing
   media_cover:set({ popup = { drawing = "toggle" }})
+  if drawing == "on" then nav.stop() else nav.start() end
 end)
 
 media_title:subscribe("mouse.exited.global", function(env)
   media_cover:set({ popup = { drawing = false }})
+  nav.stop()
 end)

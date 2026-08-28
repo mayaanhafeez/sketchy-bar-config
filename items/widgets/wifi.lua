@@ -1,6 +1,7 @@
 local colors = require("colors")
 local icons = require("icons")
 local settings = require("settings")
+local keys = require("helpers.popup_keys")
 
 local config_dir = os.getenv("CONFIG_DIR") or (os.getenv("HOME") .. "/.config/sketchybar")
 local helpers = config_dir .. "/helpers"
@@ -243,9 +244,48 @@ local state = {
 }
 
 local popup_open = false
+-- The popup's keyboard grabber; bound at the bottom, once the actions its keys
+-- fire are all defined.
+local nav
 local scheduler_active = false
 local scan_active = false
 local scan_again = false
+
+-- ---------------------------------------------------------------- focus
+-- Keyboard focus ring over everything in the popup that does something: the
+-- power switch, the speed-test button, then one entry per network row in the
+-- order they are drawn. Rows are torn down and rebuilt on every scan, so the
+-- ring is rebuilt with them and focus is re-anchored by SSID rather than by
+-- index -- a network moving up the list as its signal changes must not drag
+-- the highlight along with it.
+local focus_index = 1
+local focus_entries = {}
+local focus_ssid = nil
+
+local function focused()
+  return focus_entries[focus_index]
+end
+
+local function focused_kind()
+  local entry = focused()
+  return entry and entry.kind or ""
+end
+
+-- The two controls above the network list are always focusable; the network
+-- entries are appended to these by render_networks.
+local POWER_ENTRY = { kind = "power" }
+local SPEED_ENTRY = { kind = "speed" }
+focus_entries = { POWER_ENTRY, SPEED_ENTRY }
+
+-- A network row carries three states in one background colour: focused, then
+-- connected, then plain. Hover paints over this and hands it back on exit.
+local function entry_color(entry)
+  if entry == focused() then return colors.highlight_med end
+  return entry.connected and colors.bg2 or colors.transparent
+end
+
+-- Assigned further down, once the rows it repaints exist.
+local render_focus = function() end
 
 -- ------------------------------------------------------- forward references
 local render_networks
@@ -639,9 +679,17 @@ render_speedtest = function()
     left_color = colors.red
   end
 
+  local on_focus = focused_kind() == "speed"
   speed_row:set({
     icon = { string = left, color = left_color },
-    label = { string = button, color = button_color },
+    label = {
+      string = button,
+      color = button_color,
+      background = {
+        border_color = on_focus and colors.text or colors.muted,
+        color = on_focus and colors.bg2 or colors.transparent,
+      },
+    },
   })
 end
 
@@ -652,13 +700,15 @@ speed_row:subscribe("mouse.exited", function()
   speed_row:set({ label = { background = { border_color = colors.muted, color = colors.transparent } } })
 end)
 
-speed_row:subscribe("mouse.clicked", function(env)
-  if env.BUTTON ~= "left" then return end
+-- Shared by the Run button and the keyboard, which reach it through the focus
+-- ring rather than through a click.
+local function run_speedtest()
   if state.speedtest.supported == false then return end
 
   -- Sketchybar draws its popup above the overlay window, so close it first.
   popup_open = false
   wifi:set({ popup = { drawing = false } })
+  keys.stop_all()
 
   start_speedtest()
 
@@ -667,6 +717,11 @@ speed_row:subscribe("mouse.clicked", function(env)
   sbar.exec("pkill -x speedtest_overlay >/dev/null 2>&1; "
     .. OVERLAY .. overlay_palette()
     .. " >/dev/null 2>&1 &")
+end
+
+speed_row:subscribe("mouse.clicked", function(env)
+  if env.BUTTON ~= "left" then return end
+  run_speedtest()
 end)
 
 spacer(6)
@@ -722,11 +777,18 @@ end
 -- Knob to the right on a lit track when the radio is on, to the left on a
 -- dark track when it is off.
 local function render_power()
+  -- The pill's fill already encodes on/off, so keyboard focus is a border
+  -- around it rather than another colour inside it.
+  local on_focus = focused_kind() == "power"
   power_row:set({
     label = {
       align = state.powered and "right" or "left",
       color = state.powered and colors.text or colors.muted,
-      background = { color = state.powered and colors.highlight_high or colors.overlay },
+      background = {
+        color = state.powered and colors.highlight_high or colors.overlay,
+        border_width = on_focus and 1 or 0,
+        border_color = colors.text,
+      },
     },
   })
 end
@@ -753,13 +815,23 @@ local function add_network_row(index, net)
     status = status == "" and icons.wifi.lock or (status .. "  " .. icons.wifi.lock)
   end
 
+  local entry = {
+    kind = "network",
+    ssid = net.ssid,
+    sec = net.sec,
+    known = net.known,
+    connected = connected,
+  }
+  focus_entries[#focus_entries + 1] = entry
+  entry.index = #focus_entries
+
   local net_row = row("wifi.net." .. index, 8, {
     background = {
       drawing = true,
       height = connected and 34 or 32,
       corner_radius = 8,
       border_width = 0,
-      color = connected and colors.bg2 or colors.transparent,
+      color = entry_color(entry),
     },
     icon = {
       string = bars(net.rssi) .. "  " .. net.ssid,
@@ -781,13 +853,20 @@ local function add_network_row(index, net)
     },
   })
 
+  entry.item = net_row
+
   net_row:subscribe("mouse.entered", function()
     net_row:set({ background = { color = colors.bg2 } })
   end)
   net_row:subscribe("mouse.exited", function()
-    net_row:set({ background = { color = connected and colors.bg2 or colors.transparent } })
+    net_row:set({ background = { color = entry_color(entry) } })
   end)
   net_row:subscribe("mouse.clicked", function(env)
+    -- Clicking a row is also a way of pointing at it, so the keyboard picks up
+    -- where the mouse left off instead of from wherever it was before.
+    focus_index = entry.index
+    focus_ssid = entry.ssid
+    render_focus()
     if env.BUTTON == "right" then
       if not connected and net.known and is_secured(net.sec) then
         forget_network(net.ssid)
@@ -806,6 +885,10 @@ end
 render_networks = function()
   sbar.remove("/wifi\\.net\\../")
   sbar.remove("/wifi\\.section\\../")
+
+  -- The rows are gone, so their focus entries go with them; the two fixed
+  -- controls above the list survive.
+  focus_entries = { POWER_ENTRY, SPEED_ENTRY }
 
   if nets_header then
     nets_header:set({
@@ -848,6 +931,61 @@ render_networks = function()
   end
 
   spacer(10, "wifi.section.pad")
+
+  -- Re-anchor onto the same network the user was on, wherever the new sort
+  -- order put it. If it is gone -- out of range, or a scan dropped it -- focus
+  -- falls back to the top of the list.
+  if focus_ssid then
+    local found = nil
+    for i, entry in ipairs(focus_entries) do
+      if entry.ssid == focus_ssid then found = i break end
+    end
+    focus_index = found or 1
+    if not found then focus_ssid = nil end
+  elseif focus_index > #focus_entries then
+    focus_index = 1
+  end
+  render_focus()
+end
+
+-- ---------------------------------------------------------------- keyboard
+-- Focus is drawn by repainting every focusable row, not by tracking the one
+-- that changed: the network rows are recreated often enough that a diff would
+-- be chasing stale item handles.
+render_focus = function()
+  for _, entry in ipairs(focus_entries) do
+    if entry.item then
+      entry.item:set({ background = { color = entry_color(entry) } })
+    end
+  end
+  render_power()
+  render_speedtest()
+end
+
+local function move_focus(delta)
+  local count = #focus_entries
+  if count == 0 then return end
+  focus_index = ((focus_index - 1 + delta) % count) + 1
+  focus_ssid = focused() and focused().ssid or nil
+  render_focus()
+end
+
+-- Enter does whatever a left click on the focused row would do.
+local function activate_focus()
+  local entry = focused()
+  if not entry then return end
+  if entry.kind == "power" then
+    toggle_power()
+  elseif entry.kind == "speed" then
+    run_speedtest()
+  elseif entry.kind == "network" then
+    if state.pending ~= "" then return end
+    if entry.connected then
+      disconnect_network()
+    else
+      connect_network(entry.ssid, is_secured(entry.sec), entry.known)
+    end
+  end
 end
 
 -- ---------------------------------------------------------------- refresh
@@ -948,6 +1086,27 @@ nets_header = section_header("SCANNING WI-FI…", "wifi.nets.hdr")
 nets_header:set({ drawing = false })
 
 -- ---------------------------------------------------------------- events
+local function close_popup()
+  popup_open = false
+  wifi:set({ popup = { drawing = false } })
+  nav.stop()
+end
+
+-- Up/down walk the ring; left/right do the same, since the panel is one
+-- column and an arrow that does nothing reads as a broken key. The ring wraps,
+-- so the list is reachable from either end.
+nav = keys.bind("wifi", function(key)
+  if key == "escape" then
+    close_popup()
+  elseif key == "up" or key == "left" then
+    move_focus(-1)
+  elseif key == "down" or key == "right" then
+    move_focus(1)
+  elseif key == "return" then
+    activate_focus()
+  end
+end)
+
 wifi:subscribe("mouse.clicked", function(env)
   -- Right click opens the full macwifi TUI. There is no `mouse.right` event in
   -- sketchybar -- the button arrives as $BUTTON on mouse.clicked -- so this has
@@ -961,13 +1120,22 @@ wifi:subscribe("mouse.clicked", function(env)
   local drawing = wifi:query().popup.drawing
   popup_open = drawing == "off"
   wifi:set({ popup = { drawing = "toggle" } })
-  if popup_open then
-    refresh(true)
-    -- macwifi may have been upgraded since the config loaded, so re-check
-    -- whether it can run a speed test now. This is the only moment the Run
-    -- button is visible, so it is the only moment the answer matters.
-    probe_speedtest()
+  if not popup_open then
+    nav.stop()
+    return
   end
+  -- Every open starts on the power switch, so the first arrow press always
+  -- moves somewhere predictable.
+  focus_index = 1
+  focus_ssid = nil
+  render_focus()
+  nav.start()
+
+  refresh(true)
+  -- macwifi may have been upgraded since the config loaded, so re-check
+  -- whether it can run a speed test now. This is the only moment the Run
+  -- button is visible, so it is the only moment the answer matters.
+  probe_speedtest()
 end)
 
 wifi:subscribe({ "wifi_change", "system_woke" }, function()

@@ -1,6 +1,7 @@
 local icons = require("icons")
 local colors = require("colors")
 local settings = require("settings")
+local keys = require("helpers.popup_keys")
 
 local battery = sbar.add("item", "widgets.battery", {
   position = "right",
@@ -85,9 +86,23 @@ battery:subscribe({"routine", "power_source_change", "system_woke"}, function()
   end)
 end)
 
+-- Nothing in here is navigable, so escape is the whole keyboard contract:
+-- the popup closes the same way every other one does.
+local nav = keys.bind("battery", function(key)
+  if key ~= "escape" then return end
+  battery:set({ popup = { drawing = false } })
+  keys.stop_all()
+end)
+
 battery:subscribe("mouse.clicked", function(env)
   local drawing = battery:query().popup.drawing
   battery:set({ popup = { drawing = "toggle" } })
+
+  if drawing == "on" then
+    nav.stop()
+  else
+    nav.start()
+  end
 
   if drawing == "off" then
     sbar.exec("pmset -g batt", function(batt_info)
