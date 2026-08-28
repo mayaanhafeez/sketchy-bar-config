@@ -101,6 +101,16 @@ for _, entry in ipairs(model_rows) do table.insert(content, entry) end
 
 local function render(data)
   _G.set_codex_plan(data.plan and string.upper(data.plan) or "OPENCODE")
+  -- Before the tab guard below: the bar icon answers for both providers, so it
+  -- has to hear about Codex even while Claude is the tab on screen.
+  if _G.set_ai_alarm then
+    local hot = false
+    for _, key in ipairs({ "session", "weekly" }) do
+      local pct = tonumber(data[key .. "_pct"])
+      if pct and pct >= 90 then hot = true end
+    end
+    _G.set_ai_alarm("codex", hot)
+  end
   -- A slow refresh must not repaint Codex rows after switching back to Claude.
   if _G.ai_tab ~= "codex" then return end
   local any_limit = false

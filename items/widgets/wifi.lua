@@ -1225,6 +1225,55 @@ nav = keys.bind("wifi", function(key)
   end
 end)
 
+-- The panel proper. Everything below this line still builds the sketchybar
+-- popup, which stays as the fallback: left click opens the window, and the old
+-- popup is still reachable through wifi_popup_toggle_inline.
+--
+-- The window exists for the data path, not the pixels. `macwifi scan` is ~13s
+-- for a full sweep because every invocation is a cold process; CoreWLAN's
+-- cached results answer in ~45ms, but only a process that outlives a single
+-- click can hold that cache open and refresh it behind the user. See
+-- helpers/wifi_panel/wifi_panel.swift.
+local PANEL = helpers .. "/wifi_panel/bin/wifi_panel"
+
+local function panel_palette()
+  local function hex(color)
+    return string.format("0x%08x", color)
+  end
+  return " --foreground " .. hex(colors.text)
+    .. " --background " .. hex(colors.base)
+    .. " --accent " .. hex(colors.iris)
+    .. " --urgent " .. hex(colors.love)
+    .. " --muted " .. hex(colors.muted)
+    .. " --border " .. hex(colors.popup.border)
+end
+
+-- The panel dismisses itself on blur, so the only case this has to handle is a
+-- second click on the bar item while it is up -- which should close it rather
+-- than stack a second window. pkill either way, then relaunch if it was shut.
+local function open_panel()
+  -- One round trip answers both questions: is a panel already up, and if not,
+  -- how tall is the bar it has to hang under. The bar height is not a constant
+  -- here -- helpers/display.lua swaps it between the notched built-in display
+  -- and an external one -- so it has to be read rather than assumed.
+  sbar.exec(
+    "pgrep -x wifi_panel >/dev/null && echo up "
+      .. "|| sketchybar --query bar | /usr/bin/jq -r '.geometry.height // 30'",
+    function(out)
+      local answer = strip(out or "")
+      if answer == "up" then
+        sbar.exec("pkill -x wifi_panel")
+        return
+      end
+      sbar.exec(sh(PANEL) .. panel_palette()
+        .. " --font " .. sh(settings.font.text)
+        .. " --macwifi " .. sh(MACWIFI)
+        .. " --helpers " .. sh(helpers)
+        .. " --anchor-y " .. (tonumber(answer) or 30)
+        .. " >/dev/null 2>&1 &")
+    end)
+end
+
 local function toggle_popup()
   local drawing = wifi:query().popup.drawing
   popup_open = drawing == "off"
@@ -1256,7 +1305,7 @@ wifi:subscribe("mouse.clicked", function(env)
     return
   end
   if env.BUTTON ~= "left" then return end
-  toggle_popup()
+  open_panel()
 end)
 
 -- The wheel drives the network list from anywhere in the panel. Binding it to
@@ -1275,7 +1324,13 @@ end
 -- which is how the skhd binding reaches it. Same path as a click, so the panel
 -- comes up already focused and ready for the arrow keys.
 sbar.add("event", "wifi_popup_toggle")
-wifi:subscribe("wifi_popup_toggle", toggle_popup)
+wifi:subscribe("wifi_popup_toggle", open_panel)
+
+-- The sketchybar popup is still here and still works; it just is not what a
+-- click opens any more. Kept reachable so there is a way back if the window
+-- misbehaves on a machine where Location Services is refused.
+sbar.add("event", "wifi_popup_toggle_inline")
+wifi:subscribe("wifi_popup_toggle_inline", toggle_popup)
 
 wifi:subscribe({ "wifi_change", "system_woke" }, function()
   refresh(false)

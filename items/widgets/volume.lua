@@ -224,13 +224,61 @@ local function volume_toggle_details(env)
   end)
 end
 
-volume_icon:subscribe("mouse.clicked", volume_toggle_details)
+-- The panel proper: a real window, in place of the popup below. Same reason as
+-- the wifi and agents panels -- sliders, device lists and a keyboard all want a
+-- window rather than a stack of bar items. See helpers/volume_panel.
+local config_dir = os.getenv("CONFIG_DIR") or (os.getenv("HOME") .. "/.config/sketchybar")
+local VOL_PANEL = config_dir .. "/helpers/volume_panel/bin/volume_panel"
+
+local function vol_panel_palette()
+  local function hex(color)
+    return string.format("0x%08x", color)
+  end
+  return " --foreground " .. hex(colors.text)
+    .. " --background " .. hex(colors.base)
+    .. " --accent " .. hex(colors.iris)
+    .. " --urgent " .. hex(colors.love)
+    .. " --muted " .. hex(colors.muted)
+    .. " --border " .. hex(colors.popup.border)
+end
+
+-- The panel closes itself on blur, so the only case here is a second click on
+-- the bar item while it is up.
+local function open_volume_panel()
+  sbar.exec(
+    "pgrep -x volume_panel >/dev/null && echo up "
+      .. "|| sketchybar --query bar | /usr/bin/jq -r '.geometry.height // 30'",
+    function(out)
+      local answer = (out or ""):gsub("^%s*(.-)%s*$", "%1")
+      if answer == "up" then
+        sbar.exec("pkill -x volume_panel")
+        return
+      end
+      sbar.exec("'" .. VOL_PANEL .. "'" .. vol_panel_palette()
+        .. " --font '" .. settings.font.text .. "'"
+        .. " --anchor-y " .. (tonumber(answer) or 30)
+        .. " >/dev/null 2>&1 &")
+    end)
+end
+
+volume_icon:subscribe("mouse.clicked", function(env)
+  if env.BUTTON == "right" then
+    sbar.exec("open /System/Library/PreferencePanes/Sound.prefpane")
+    return
+  end
+  open_volume_panel()
+end)
+
 volume_percent:subscribe("mouse.exited.global", volume_collapse_details)
 
 -- Reachable from anywhere: `sketchybar --trigger volume_popup_toggle`, which
 -- is how the skhd binding opens it. The handler fakes the left click the
 -- toggle expects, since the right-click branch opens System Settings.
 sbar.add("event", "volume_popup_toggle")
-volume_icon:subscribe("volume_popup_toggle", function()
+volume_icon:subscribe("volume_popup_toggle", open_volume_panel)
+
+-- The sketchybar popup still works; it just is not what a click opens now.
+sbar.add("event", "volume_popup_toggle_inline")
+volume_icon:subscribe("volume_popup_toggle_inline", function()
   volume_toggle_details({ BUTTON = "left" })
 end)

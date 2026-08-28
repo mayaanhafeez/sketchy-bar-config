@@ -529,9 +529,37 @@ end
 
 local last_data = nil
 
+-- The bar icon turns red when any usage meter would be red in the panel, which
+-- is the same 90% threshold the panel's LimitRow calls `alarming`. Both
+-- providers feed it -- the bar carries one icon for whichever agent is running,
+-- and a Codex window about to run out is worth the same warning as a Claude
+-- one, whichever tab the popup happens to be showing.
+local ALARM_PCT = 90
+local alarm = { claude = false, codex = false }
+
+_G.set_ai_alarm = function(provider, on)
+  if alarm[provider] == on then return end
+  alarm[provider] = on
+  claude:set({
+    icon = { color = (alarm.claude or alarm.codex) and colors.love or colors.white },
+  })
+end
+
+-- True when any limit this payload reports is at or past the threshold. Limits
+-- only exist on a subscription, so an API-key account never alarms.
+local function limits_alarming(data, gated)
+  if gated and not (data.subscribed == "1" and data.limits == "1") then return false end
+  for _, key in ipairs({ "session", "weekly" }) do
+    local pct = tonumber(data[key .. "_pct"])
+    if pct and pct >= ALARM_PCT then return true end
+  end
+  return false
+end
+
 local function render(data)
   last_data = data
   last_plan = data.plan and string.upper(data.plan) or ""
+  _G.set_ai_alarm("claude", limits_alarming(data, true))
 
   -- A refresh started while Claude was visible can finish after the user has
   -- switched tabs. It must not redraw Claude rows over the Codex view.
@@ -679,6 +707,11 @@ local function update_visibility()
     if now - last_detail >= DETAIL_INTERVAL then
       last_detail = now
       refresh_detail()
+      -- Codex too, even though its rows are only drawn on its own tab. The bar
+      -- icon answers for both providers, and polling only the visible one meant
+      -- a Codex window sitting at 100% never turned the icon red until someone
+      -- happened to open that tab.
+      if _G.refresh_codex then _G.refresh_codex() end
     end
   end)
 end
@@ -701,6 +734,49 @@ nav = keys.bind("claude", function(key)
   end
 end)
 
+-- The panel proper. Unlike the Wi-Fi one this is not a speed fix -- both usage
+-- scripts answer in about 20ms and the popup drew them fine. It is about what
+-- the popup cost to build: 58 permanent bar items behind two popups, meters
+-- padded out of monospace strings, and a fixed row height everywhere because a
+-- popup row is as tall as its background. See helpers/agents_panel.
+local PANEL = config_dir .. "/helpers/agents_panel/bin/agents_panel"
+
+local function panel_palette()
+  local function hex(color)
+    return string.format("0x%08x", color)
+  end
+  return " --foreground " .. hex(colors.text)
+    .. " --background " .. hex(colors.base)
+    .. " --accent " .. hex(colors.iris)
+    .. " --urgent " .. hex(colors.love)
+    .. " --muted " .. hex(colors.muted)
+    .. " --border " .. hex(colors.popup.border)
+end
+
+-- The panel closes itself on blur, so the only case to handle here is a second
+-- click on the bar item while it is up. It opens on whichever tab the bar item
+-- is currently showing, so the click does not silently change the subject.
+local function open_panel()
+  sbar.exec(
+    "pgrep -x agents_panel >/dev/null && echo up "
+      .. "|| sketchybar --query bar | /usr/bin/jq -r '.geometry.height // 30'",
+    function(out)
+      local answer = (out or ""):gsub("^%s*(.-)%s*$", "%1")
+      if answer == "up" then
+        sbar.exec("pkill -x agents_panel")
+        return
+      end
+      sbar.exec("'" .. PANEL .. "'"
+        .. " --helpers '" .. config_dir .. "/helpers'"
+        .. " --assets '" .. config_dir .. "/assets'"
+        .. " --provider " .. current_tab
+        .. panel_palette()
+        .. " --font '" .. settings.font.text .. "'"
+        .. " --anchor-y " .. (tonumber(answer) or 30)
+        .. " >/dev/null 2>&1 &")
+    end)
+end
+
 local function toggle_popup()
   if claude:query().popup.drawing == "on" then
     collapse()
@@ -719,7 +795,7 @@ claude:subscribe("mouse.clicked", function(env)
     collapse()
     return
   end
-  toggle_popup()
+  open_panel()
 end)
 
 -- What the skhd binding hits: `sketchybar --trigger agents_popup_toggle`.
@@ -727,6 +803,14 @@ end)
 -- the panel to drop out of.
 sbar.add("event", "agents_popup_toggle")
 claude:subscribe("agents_popup_toggle", function()
+  if not widget_active then return end
+  open_panel()
+end)
+
+-- The sketchybar popup still works and is still wired to its own trigger; it
+-- just is not what a click opens any more.
+sbar.add("event", "agents_popup_toggle_inline")
+claude:subscribe("agents_popup_toggle_inline", function()
   if not widget_active then return end
   toggle_popup()
 end)
