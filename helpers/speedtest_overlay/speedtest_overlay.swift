@@ -204,7 +204,7 @@ final class Gauge {
     private let sweep: CGFloat = 3 * .pi / 2
 
     private let radius: CGFloat
-    private var scale: Double = 10
+    private let scale: Double = 200
 
     private(set) var value: Double = 0
 
@@ -307,14 +307,6 @@ final class Gauge {
                                      y: center.y + sin(angle) * outer))
         }
         return path
-    }
-
-    /// Both dials share one full-scale value so they stay directly comparable;
-    /// the controller owns it and pushes it in.
-    func setScale(_ newScale: Double, animated: Bool) {
-        guard newScale != scale else { return }
-        scale = newScale
-        set(value: value, animated: animated)
     }
 
     func set(value newValue: Double, animated: Bool) {
@@ -467,11 +459,16 @@ final class Controller: NSObject, NSApplicationDelegate {
     private var windows: [OverlayWindow] = []
     private var view: OverlayView!
     private var timer: Timer?
+    private var displayLink: CADisplayLink?
     private var finished = false
     private var closing = false
     private var sawAnything = false
     private var idleTicks = 0
-    private var peak: Double = 0
+    private var targetDownload: Double = 0
+    private var targetUpload: Double = 0
+    private var hasDownload = false
+    private var hasUpload = false
+    private var lastFrameTime = CACurrentMediaTime()
 
     init(options: Options) {
         self.options = options
@@ -536,6 +533,7 @@ final class Controller: NSObject, NSApplicationDelegate {
         timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
             self?.tick()
         }
+        startDisplayLink()
         tick()
     }
 
@@ -605,8 +603,8 @@ final class Controller: NSObject, NSApplicationDelegate {
                 }
             case "complete":
                 let result = event["result"] as? [String: Any] ?? [:]
-                apply(download: result["download_mbps"] as? Double,
-                      upload: result["upload_mbps"] as? Double)
+                settle(download: result["download_mbps"] as? Double,
+                       upload: result["upload_mbps"] as? Double)
                 view.download.setActive(true)
                 view.upload.setActive(true)
                 var parts: [String] = []
@@ -633,29 +631,63 @@ final class Controller: NSObject, NSApplicationDelegate {
         var downloadMoved = false
         var uploadMoved = false
         if let value = newDownload {
-            downloadMoved = abs(value - view.download.value) > 0.05
-            view.download.set(value: value, animated: true)
+            let clean = max(0, value)
+            downloadMoved = !hasDownload || abs(clean - targetDownload) > 0.05
+            targetDownload = clean
+            hasDownload = true
         }
         if let value = newUpload {
-            uploadMoved = abs(value - view.upload.value) > 0.05
-            view.upload.set(value: value, animated: true)
+            let clean = max(0, value)
+            uploadMoved = !hasUpload || abs(clean - targetUpload) > 0.05
+            targetUpload = clean
+            hasUpload = true
         }
         if downloadMoved != uploadMoved {
             view.download.setActive(downloadMoved)
             view.upload.setActive(uploadMoved)
         }
-        applyScale()
     }
 
-    /// Nice round full-scale values, shared by both dials and never shrinking
-    /// mid-run so a needle cannot swing backwards while readings still climb.
-    private func applyScale() {
-        peak = max(peak, max(view.download.value, view.upload.value))
-        let candidates: [Double] = [10, 25, 50, 100, 250, 500, 1000, 2500, 5000]
-        let needed = peak * 1.15
-        let scale = candidates.first { $0 >= needed } ?? max(needed, 10)
-        view.download.setScale(scale, animated: true)
-        view.upload.setScale(scale, animated: true)
+    private func startDisplayLink() {
+        displayLink = view.displayLink(target: self, selector: #selector(updateDisplay))
+        displayLink?.add(to: .main, forMode: .common)
+    }
+
+    /// The provider emits sparse, noisy samples. Follow their latest values at
+    /// display refresh rate so digits, arcs, and needles all move as one surface.
+    @objc private func updateDisplay() {
+        guard !closing else { return }
+        let now = CACurrentMediaTime()
+        let dt = min(0.05, max(0.001, now - lastFrameTime))
+        lastFrameTime = now
+
+        if hasDownload {
+            view.download.set(value: eased(view.download.value, toward: targetDownload, dt: dt),
+                              animated: false)
+        }
+        if hasUpload {
+            view.upload.set(value: eased(view.upload.value, toward: targetUpload, dt: dt),
+                            animated: false)
+        }
+    }
+
+    private func eased(_ current: Double, toward target: Double, dt: Double) -> Double {
+        let response = target >= current ? 7.5 : 4.0
+        let next = current + (target - current) * (1 - exp(-response * dt))
+        return abs(target - next) < 0.02 ? target : next
+    }
+
+    private func settle(download: Double?, upload: Double?) {
+        if let value = download {
+            targetDownload = max(0, value)
+            hasDownload = true
+            view.download.set(value: targetDownload, animated: false)
+        }
+        if let value = upload {
+            targetUpload = max(0, value)
+            hasUpload = true
+            view.upload.set(value: targetUpload, animated: false)
+        }
     }
 
     private func finish() {
@@ -663,6 +695,8 @@ final class Controller: NSObject, NSApplicationDelegate {
         finished = true
         timer?.invalidate()
         timer = nil
+        displayLink?.invalidate()
+        displayLink = nil
         guard options.linger > 0 else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + options.linger) { [weak self] in
             self?.dismiss()
@@ -673,6 +707,8 @@ final class Controller: NSObject, NSApplicationDelegate {
         guard !closing else { return }
         closing = true
         timer?.invalidate()
+        displayLink?.invalidate()
+        displayLink = nil
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.15
             for window in windows { window.animator().alphaValue = 0 }
