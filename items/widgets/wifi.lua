@@ -265,8 +265,6 @@ local focus_ssid = nil
 local network_offset = 1
 local sorted_networks = {}
 local network_focus_index = nil
-local generated_network_items = {}
-local scroll_locked = false
 
 local function focused()
   return focus_entries[focus_index]
@@ -803,8 +801,9 @@ end
 -- ---------------------------------------------------------------- networks
 local nets_header
 local nets_footer
+local network_slots = {}
 
-local function add_network_row(index, net)
+local function network_row_config(net)
   local connected = net.ssid == state.ssid
   local pending = net.ssid == state.pending
 
@@ -830,11 +829,8 @@ local function add_network_row(index, net)
     known = net.known,
     connected = connected,
   }
-  focus_entries[#focus_entries + 1] = entry
-  entry.index = #focus_entries
-
-  local name = "wifi.net." .. index
-  local net_row = row(name, 8, {
+  return entry, {
+    drawing = true,
     background = {
       drawing = true,
       height = connected and 34 or 32,
@@ -860,51 +856,10 @@ local function add_network_row(index, net)
       font = font(SZ_PILL),
       color = status_color,
     },
-  })
-  generated_network_items[#generated_network_items + 1] = name
-
-  entry.item = net_row
-
-  net_row:subscribe("mouse.entered", function()
-    net_row:set({ background = { color = colors.bg2 } })
-  end)
-  net_row:subscribe("mouse.exited", function()
-    net_row:set({ background = { color = entry_color(entry) } })
-  end)
-  net_row:subscribe("mouse.scrolled", function(env)
-    local delta = tonumber(env.SCROLL_DELTA) or 0
-    if delta ~= 0 then scroll_networks(delta > 0 and -1 or 1) end
-  end)
-  net_row:subscribe("mouse.clicked", function(env)
-    -- Clicking a row is also a way of pointing at it, so the keyboard picks up
-    -- where the mouse left off instead of from wherever it was before.
-    focus_index = entry.index
-    focus_ssid = entry.ssid
-    for i, candidate in ipairs(sorted_networks) do
-      if candidate.ssid == entry.ssid then network_focus_index = i break end
-    end
-    render_focus()
-    if env.BUTTON == "right" then
-      if not connected and net.known and is_secured(net.sec) then
-        forget_network(net.ssid)
-      end
-      return
-    end
-    if state.pending ~= "" then return end
-    if connected then
-      disconnect_network()
-    else
-      connect_network(net.ssid, is_secured(net.sec), net.known)
-    end
-  end)
+  }
 end
 
 render_networks = function()
-  for _, name in ipairs(generated_network_items) do sbar.remove(name) end
-  generated_network_items = {}
-
-  -- The rows are gone, so their focus entries go with them; the two fixed
-  -- controls above the list survive.
   focus_entries = { POWER_ENTRY, SPEED_ENTRY }
 
   if nets_header then
@@ -915,6 +870,8 @@ render_networks = function()
   end
 
   if not state.powered then
+    for _, slot in ipairs(network_slots) do slot.item:set({ drawing = false }) end
+    nets_footer:set({ drawing = false })
     return
   end
 
@@ -935,40 +892,27 @@ render_networks = function()
   network_offset = math.max(1, math.min(network_offset, max_offset))
   local last_visible = math.min(#nets, network_offset + NETWORK_PAGE_SIZE - 1)
 
-  if nets_footer then
-    local scrollable = #nets > NETWORK_PAGE_SIZE
-    nets_footer:set({
-      drawing = scrollable,
-      label = {
-        string = scrollable and string.format("%d–%d OF %d   SCROLL", network_offset,
-          last_visible, #nets) or "",
-      },
-    })
+  for slot_index, slot in ipairs(network_slots) do
+    local net = nets[network_offset + slot_index - 1]
+    if net then
+      local entry, config = network_row_config(net)
+      entry.item = slot.item
+      entry.index = #focus_entries + 1
+      slot.entry = entry
+      focus_entries[#focus_entries + 1] = entry
+      slot.item:set(config)
+    else
+      slot.entry = nil
+      slot.item:set({ drawing = false })
+    end
   end
 
-  local last_title = ""
-  local index = 0
-  for i = network_offset, last_visible do
-    local net = nets[i]
-    local title = ""
-    if net.known and (i == network_offset or not nets[i - 1].known) then
-      title = "KNOWN NETWORKS"
-    elseif not net.known and (i == network_offset or nets[i - 1].known) then
-      title = "OTHER NETWORKS"
-    end
-    if title ~= "" and title ~= last_title then
-      last_title = title
-      local header = "wifi.net_section." .. tostring(section_seq + 1)
-      section_header(title, "wifi.net_section")
-      generated_network_items[#generated_network_items + 1] = header
-    end
-    add_network_row(index, net)
-    index = index + 1
-  end
-
-  local padding = "wifi.section.pad." .. tostring(gap_seq + 1)
-  spacer(10, "wifi.section.pad")
-  generated_network_items[#generated_network_items + 1] = padding
+  local above = network_offset > 1
+  local below = last_visible < #nets
+  nets_footer:set({
+    drawing = #nets > NETWORK_PAGE_SIZE,
+    label = { string = (above and "↑" or " ") .. "     " .. (below and "↓" or " ") },
+  })
 
   -- Re-anchor onto the same network the user was on, wherever the new sort
   -- order put it. If it is gone -- out of range, or a scan dropped it -- focus
@@ -987,7 +931,6 @@ render_networks = function()
 end
 
 scroll_networks = function(delta)
-  if scroll_locked then return end
   local max_offset = math.max(1, #sorted_networks - NETWORK_PAGE_SIZE + 1)
   local next_offset = math.max(1, math.min(network_offset + delta, max_offset))
   if next_offset == network_offset then return end
@@ -996,14 +939,10 @@ scroll_networks = function(delta)
   network_focus_index = nil
   focus_index = 1
   render_networks()
-  scroll_locked = true
-  sbar.exec("sleep 0.12", function() scroll_locked = false end)
 end
 
 -- ---------------------------------------------------------------- keyboard
--- Focus is drawn by repainting every focusable row, not by tracking the one
--- that changed: the network rows are recreated often enough that a diff would
--- be chasing stale item handles.
+-- Focus is drawn by repainting every reusable slot after its network changes.
 render_focus = function()
   for _, entry in ipairs(focus_entries) do
     if entry.item then
@@ -1158,8 +1097,52 @@ end
 -- carry the labelling once results land.
 nets_header = section_header("SCANNING WI-FI…", "wifi.nets.hdr")
 nets_header:set({ drawing = false })
+
+for i = 1, NETWORK_PAGE_SIZE do
+  local slot = { entry = nil }
+  slot.item = row("wifi.net.slot." .. i, 8, {
+    drawing = false,
+    icon = hidden,
+    label = hidden,
+    background = block(32),
+  })
+  slot.item:subscribe("mouse.entered", function()
+    if slot.entry then slot.item:set({ background = { color = colors.bg2 } }) end
+  end)
+  slot.item:subscribe("mouse.exited", function()
+    if slot.entry then slot.item:set({ background = { color = entry_color(slot.entry) } }) end
+  end)
+  slot.item:subscribe("mouse.scrolled", function(env)
+    local delta = tonumber(env.SCROLL_DELTA) or 0
+    if delta ~= 0 then scroll_networks(delta > 0 and -1 or 1) end
+  end)
+  slot.item:subscribe("mouse.clicked", function(env)
+    local entry = slot.entry
+    if not entry then return end
+    focus_index = entry.index
+    focus_ssid = entry.ssid
+    for index, candidate in ipairs(sorted_networks) do
+      if candidate.ssid == entry.ssid then network_focus_index = index break end
+    end
+    render_focus()
+    if env.BUTTON == "right" then
+      if not entry.connected and entry.known and is_secured(entry.sec) then
+        forget_network(entry.ssid)
+      end
+      return
+    end
+    if state.pending ~= "" then return end
+    if entry.connected then
+      disconnect_network()
+    else
+      connect_network(entry.ssid, is_secured(entry.sec), entry.known)
+    end
+  end)
+  network_slots[#network_slots + 1] = slot
+end
+
 nets_footer = section_header("", "wifi.nets.footer")
-nets_footer:set({ drawing = false, label = { align = "right", color = colors.muted } })
+nets_footer:set({ drawing = false, label = { align = "center", color = colors.muted } })
 nets_footer:subscribe("mouse.scrolled", function(env)
   local delta = tonumber(env.SCROLL_DELTA) or 0
   if delta ~= 0 then scroll_networks(delta > 0 and -1 or 1) end
