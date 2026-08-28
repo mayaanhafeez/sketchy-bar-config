@@ -204,7 +204,7 @@ final class Gauge {
     private let sweep: CGFloat = 3 * .pi / 2
 
     private let radius: CGFloat
-    private var scale: Double = 10
+    private let scale: Double = 200
 
     private(set) var value: Double = 0
 
@@ -307,14 +307,6 @@ final class Gauge {
                                      y: center.y + sin(angle) * outer))
         }
         return path
-    }
-
-    /// Both dials share one full-scale value so they stay directly comparable;
-    /// the controller owns it and pushes it in.
-    func setScale(_ newScale: Double, animated: Bool) {
-        guard newScale != scale else { return }
-        scale = newScale
-        set(value: value, animated: animated)
     }
 
     func set(value newValue: Double, animated: Bool) {
@@ -472,7 +464,6 @@ final class Controller: NSObject, NSApplicationDelegate {
     private var closing = false
     private var sawAnything = false
     private var idleTicks = 0
-    private var peak: Double = 0
     private var targetDownload: Double = 0
     private var targetUpload: Double = 0
     private var hasDownload = false
@@ -678,7 +669,6 @@ final class Controller: NSObject, NSApplicationDelegate {
             view.upload.set(value: eased(view.upload.value, toward: targetUpload, dt: dt),
                             animated: false)
         }
-        applyScale()
     }
 
     private func eased(_ current: Double, toward target: Double, dt: Double) -> Double {
@@ -698,18 +688,6 @@ final class Controller: NSObject, NSApplicationDelegate {
             hasUpload = true
             view.upload.set(value: targetUpload, animated: false)
         }
-        applyScale()
-    }
-
-    /// Nice round full-scale values, shared by both dials and never shrinking
-    /// mid-run so a needle cannot swing backwards while readings still climb.
-    private func applyScale() {
-        peak = max(peak, max(view.download.value, view.upload.value))
-        let candidates: [Double] = [10, 25, 50, 100, 250, 500, 1000, 2500, 5000]
-        let needed = peak * 1.25
-        let scale = candidates.first { $0 >= needed } ?? max(needed, 10)
-        view.download.setScale(scale, animated: true)
-        view.upload.setScale(scale, animated: true)
     }
 
     private func finish() {
