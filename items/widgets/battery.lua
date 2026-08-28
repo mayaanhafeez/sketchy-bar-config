@@ -56,6 +56,9 @@ local low_power_supported = true
 local low_power_on = false
 local low_power_busy = false
 
+-- Assigned below, next to the charge readout it repaints.
+local render_bar_icon = function() end
+
 local low_power = sbar.add("item", "widgets.battery.lowpower", {
   position = "popup." .. battery.name,
   icon = {
@@ -112,6 +115,7 @@ local function apply_low_power(out)
   ring = low_power_supported and { { item = low_power, kind = "lowpower" } } or {}
   if focus_index > #ring then focus_index = 1 end
   render_low_power()
+  render_bar_icon()
 end
 
 local function refresh_low_power()
@@ -161,7 +165,22 @@ local battery_icons = {
   "󰁹", -- 100%
 }
 
-battery:subscribe({"routine", "power_source_change", "system_woke"}, function()
+-- The glyph is cached because the icon has two owners: the charge reading
+-- picks the shape, Low Power Mode picks the colour, and either can change
+-- without the other having run.
+local charge_icon = "!"
+
+render_bar_icon = function()
+  battery:set({
+    icon = {
+      string = charge_icon,
+      -- Yellow while Low Power Mode is on, the way macOS tints its own.
+      color = low_power_on and colors.gold or colors.text,
+    },
+  })
+end
+
+local function update_charge()
   sbar.exec("pmset -g batt", function(batt_info)
     local icon = "!"
     local label = "?"
@@ -184,9 +203,19 @@ battery:subscribe({"routine", "power_source_change", "system_woke"}, function()
       lead = "0"
     end
 
-    battery:set({ icon = { string = icon, color = colors.text } })
+    charge_icon = icon
+    render_bar_icon()
     battery_pct:set({ label = { string = lead .. label } })
   end)
+end
+
+-- One subscription for the whole item. SbarLua keeps a single callback per
+-- item and event, so a second subscribe() naming an event the item already
+-- listens for replaces the first -- which is how the charge readout went
+-- missing when Low Power Mode wanted the same two events.
+battery:subscribe({ "routine", "power_source_change", "system_woke" }, function()
+  update_charge()
+  refresh_low_power()
 end)
 
 local function move_focus(delta)
@@ -248,11 +277,10 @@ battery:subscribe("mouse.clicked", toggle_popup)
 sbar.add("event", "battery_popup_toggle")
 battery:subscribe("battery_popup_toggle", toggle_popup)
 
--- Low Power Mode can also be flipped from System Settings or by plugging in,
--- so the row is re-read whenever the power situation changes rather than only
--- when the popup opens.
-battery:subscribe({ "power_source_change", "system_woke" }, refresh_low_power)
-
+-- Nothing has drawn the icon yet at this point: routine only comes around
+-- every update_freq seconds, so without this the bar would have a blank gap
+-- where the battery is for the first few minutes after a reload.
+update_charge()
 refresh_low_power()
 
 sbar.add("item", "widgets.battery.padding", {
