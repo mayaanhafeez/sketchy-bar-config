@@ -11,6 +11,7 @@ local MACWIFI = os.getenv("MACWIFI_BIN") or "/usr/local/bin/macwifi"
 
 local width = 336
 local pad = 12
+local NETWORK_PAGE_SIZE = 6
 
 -- Wi-Fi panel, ported from omarchy's network panel (Panel.qml) onto a
 -- sketchybar popup. Everything macwifi can do is wired up (status, scan,
@@ -261,6 +262,9 @@ local scan_again = false
 local focus_index = 1
 local focus_entries = {}
 local focus_ssid = nil
+local network_offset = 1
+local sorted_networks = {}
+local network_focus_index = nil
 
 local function focused()
   return focus_entries[focus_index]
@@ -291,6 +295,7 @@ local render_focus = function() end
 local render_networks
 local refresh
 local schedule_refresh
+local scroll_networks
 
 -- ---------------------------------------------------------------- actions
 local function clear_pending()
@@ -795,6 +800,7 @@ end
 
 -- ---------------------------------------------------------------- networks
 local nets_header
+local nets_footer
 
 local function add_network_row(index, net)
   local connected = net.ssid == state.ssid
@@ -861,11 +867,18 @@ local function add_network_row(index, net)
   net_row:subscribe("mouse.exited", function()
     net_row:set({ background = { color = entry_color(entry) } })
   end)
+  net_row:subscribe("mouse.scrolled", function(env)
+    local delta = tonumber(env.SCROLL_DELTA) or 0
+    if delta ~= 0 then scroll_networks(delta > 0 and -1 or 1) end
+  end)
   net_row:subscribe("mouse.clicked", function(env)
     -- Clicking a row is also a way of pointing at it, so the keyboard picks up
     -- where the mouse left off instead of from wherever it was before.
     focus_index = entry.index
     focus_ssid = entry.ssid
+    for i, candidate in ipairs(sorted_networks) do
+      if candidate.ssid == entry.ssid then network_focus_index = i break end
+    end
     render_focus()
     if env.BUTTON == "right" then
       if not connected and net.known and is_secured(net.sec) then
@@ -884,7 +897,7 @@ end
 
 render_networks = function()
   sbar.remove("/wifi\\.net\\../")
-  sbar.remove("/wifi\\.section\\../")
+  sbar.remove("/wifi\\.net_section\\../")
 
   -- The rows are gone, so their focus entries go with them; the two fixed
   -- controls above the list survive.
@@ -912,19 +925,36 @@ render_networks = function()
     if a.known ~= b.known then return a.known end
     return a.rssi > b.rssi
   end)
+  sorted_networks = nets
+
+  local max_offset = math.max(1, #nets - NETWORK_PAGE_SIZE + 1)
+  network_offset = math.max(1, math.min(network_offset, max_offset))
+  local last_visible = math.min(#nets, network_offset + NETWORK_PAGE_SIZE - 1)
+
+  if nets_footer then
+    local scrollable = #nets > NETWORK_PAGE_SIZE
+    nets_footer:set({
+      drawing = scrollable,
+      label = {
+        string = scrollable and string.format("%d–%d OF %d   SCROLL", network_offset,
+          last_visible, #nets) or "",
+      },
+    })
+  end
 
   local last_title = ""
   local index = 0
-  for i, net in ipairs(nets) do
+  for i = network_offset, last_visible do
+    local net = nets[i]
     local title = ""
-    if net.known and i == 1 then
+    if net.known and (i == network_offset or not nets[i - 1].known) then
       title = "KNOWN NETWORKS"
-    elseif not net.known and (i == 1 or nets[i - 1].known) then
+    elseif not net.known and (i == network_offset or nets[i - 1].known) then
       title = "OTHER NETWORKS"
     end
     if title ~= "" and title ~= last_title then
       last_title = title
-      section_header(title)
+      section_header(title, "wifi.net_section")
     end
     add_network_row(index, net)
     index = index + 1
@@ -941,11 +971,22 @@ render_networks = function()
       if entry.ssid == focus_ssid then found = i break end
     end
     focus_index = found or 1
-    if not found then focus_ssid = nil end
+    if not found then focus_ssid = nil network_focus_index = nil end
   elseif focus_index > #focus_entries then
     focus_index = 1
   end
   render_focus()
+end
+
+scroll_networks = function(delta)
+  local max_offset = math.max(1, #sorted_networks - NETWORK_PAGE_SIZE + 1)
+  local next_offset = math.max(1, math.min(network_offset + delta, max_offset))
+  if next_offset == network_offset then return end
+  network_offset = next_offset
+  focus_ssid = nil
+  network_focus_index = nil
+  focus_index = 1
+  render_networks()
 end
 
 -- ---------------------------------------------------------------- keyboard
@@ -963,11 +1004,33 @@ render_focus = function()
 end
 
 local function move_focus(delta)
-  local count = #focus_entries
-  if count == 0 then return end
-  focus_index = ((focus_index - 1 + delta) % count) + 1
-  focus_ssid = focused() and focused().ssid or nil
-  render_focus()
+  local total = #sorted_networks + 2
+  if total == 2 then
+    focus_index = ((focus_index - 1 + delta) % 2) + 1
+    focus_ssid = nil
+    network_focus_index = nil
+    render_focus()
+    return
+  end
+
+  local absolute = network_focus_index and (network_focus_index + 2) or focus_index
+  absolute = ((absolute - 1 + delta) % total) + 1
+  if absolute <= 2 then
+    focus_index = absolute
+    focus_ssid = nil
+    network_focus_index = nil
+    render_focus()
+    return
+  end
+
+  network_focus_index = absolute - 2
+  focus_ssid = sorted_networks[network_focus_index].ssid
+  if network_focus_index < network_offset then
+    network_offset = network_focus_index
+  elseif network_focus_index >= network_offset + NETWORK_PAGE_SIZE then
+    network_offset = network_focus_index - NETWORK_PAGE_SIZE + 1
+  end
+  render_networks()
 end
 
 -- Enter does whatever a left click on the focused row would do.
@@ -1084,6 +1147,12 @@ end
 -- carry the labelling once results land.
 nets_header = section_header("SCANNING WI-FI…", "wifi.nets.hdr")
 nets_header:set({ drawing = false })
+nets_footer = section_header("", "wifi.nets.footer")
+nets_footer:set({ drawing = false, label = { align = "right", color = colors.muted } })
+nets_footer:subscribe("mouse.scrolled", function(env)
+  local delta = tonumber(env.SCROLL_DELTA) or 0
+  if delta ~= 0 then scroll_networks(delta > 0 and -1 or 1) end
+end)
 
 -- ---------------------------------------------------------------- events
 local function close_popup()
@@ -1119,6 +1188,8 @@ local function toggle_popup()
   -- moves somewhere predictable.
   focus_index = 1
   focus_ssid = nil
+  network_focus_index = nil
+  network_offset = 1
   render_focus()
   nav.start()
 
