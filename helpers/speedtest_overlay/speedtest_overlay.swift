@@ -472,6 +472,8 @@ final class Controller: NSObject, NSApplicationDelegate {
     private var sawAnything = false
     private var idleTicks = 0
     private var peak: Double = 0
+    private var smoothedDownload: Double?
+    private var smoothedUpload: Double?
 
     init(options: Options) {
         self.options = options
@@ -599,14 +601,16 @@ final class Controller: NSObject, NSApplicationDelegate {
                 view.setStatus("MEASURING…")
             case "progress":
                 apply(download: event["download_mbps"] as? Double,
-                      upload: event["upload_mbps"] as? Double)
+                      upload: event["upload_mbps"] as? Double,
+                      final: false)
                 if let ping = event["ping_ms"] as? Double {
                     view.setStatus(String(format: "MEASURING…   %.0f ms", ping))
                 }
             case "complete":
                 let result = event["result"] as? [String: Any] ?? [:]
                 apply(download: result["download_mbps"] as? Double,
-                      upload: result["upload_mbps"] as? Double)
+                      upload: result["upload_mbps"] as? Double,
+                      final: true)
                 view.download.setActive(true)
                 view.upload.setActive(true)
                 var parts: [String] = []
@@ -628,15 +632,19 @@ final class Controller: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func apply(download newDownload: Double?, upload newUpload: Double?) {
+    private func apply(download newDownload: Double?, upload newUpload: Double?, final: Bool) {
         // Providers measure one direction at a time; highlight whichever moved.
         var downloadMoved = false
         var uploadMoved = false
-        if let value = newDownload {
+        if let sample = newDownload {
+            let value = smoothed(sample, previous: smoothedDownload, final: final)
+            smoothedDownload = value
             downloadMoved = abs(value - view.download.value) > 0.05
             view.download.set(value: value, animated: true)
         }
-        if let value = newUpload {
+        if let sample = newUpload {
+            let value = smoothed(sample, previous: smoothedUpload, final: final)
+            smoothedUpload = value
             uploadMoved = abs(value - view.upload.value) > 0.05
             view.upload.set(value: value, animated: true)
         }
@@ -647,12 +655,21 @@ final class Controller: NSObject, NSApplicationDelegate {
         applyScale()
     }
 
+    /// Provider progress values are instantaneous samples and can swing wildly.
+    /// A modest EMA keeps the live readout calm while terminal results stay exact.
+    private func smoothed(_ sample: Double, previous: Double?, final: Bool) -> Double {
+        let value = max(0, sample)
+        guard !final, let previous else { return value }
+        let alpha = value < previous ? 0.16 : 0.28
+        return previous + (value - previous) * alpha
+    }
+
     /// Nice round full-scale values, shared by both dials and never shrinking
     /// mid-run so a needle cannot swing backwards while readings still climb.
     private func applyScale() {
         peak = max(peak, max(view.download.value, view.upload.value))
         let candidates: [Double] = [10, 25, 50, 100, 250, 500, 1000, 2500, 5000]
-        let needed = peak * 1.15
+        let needed = peak * 1.25
         let scale = candidates.first { $0 >= needed } ?? max(needed, 10)
         view.download.setScale(scale, animated: true)
         view.upload.setScale(scale, animated: true)
