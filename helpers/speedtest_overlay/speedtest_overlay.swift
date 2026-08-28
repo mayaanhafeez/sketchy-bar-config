@@ -467,13 +467,17 @@ final class Controller: NSObject, NSApplicationDelegate {
     private var windows: [OverlayWindow] = []
     private var view: OverlayView!
     private var timer: Timer?
+    private var displayLink: CADisplayLink?
     private var finished = false
     private var closing = false
     private var sawAnything = false
     private var idleTicks = 0
     private var peak: Double = 0
-    private var smoothedDownload: Double?
-    private var smoothedUpload: Double?
+    private var targetDownload: Double = 0
+    private var targetUpload: Double = 0
+    private var hasDownload = false
+    private var hasUpload = false
+    private var lastFrameTime = CACurrentMediaTime()
 
     init(options: Options) {
         self.options = options
@@ -538,6 +542,7 @@ final class Controller: NSObject, NSApplicationDelegate {
         timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
             self?.tick()
         }
+        startDisplayLink()
         tick()
     }
 
@@ -601,16 +606,14 @@ final class Controller: NSObject, NSApplicationDelegate {
                 view.setStatus("MEASURING…")
             case "progress":
                 apply(download: event["download_mbps"] as? Double,
-                      upload: event["upload_mbps"] as? Double,
-                      final: false)
+                      upload: event["upload_mbps"] as? Double)
                 if let ping = event["ping_ms"] as? Double {
                     view.setStatus(String(format: "MEASURING…   %.0f ms", ping))
                 }
             case "complete":
                 let result = event["result"] as? [String: Any] ?? [:]
-                apply(download: result["download_mbps"] as? Double,
-                      upload: result["upload_mbps"] as? Double,
-                      final: true)
+                settle(download: result["download_mbps"] as? Double,
+                       upload: result["upload_mbps"] as? Double)
                 view.download.setActive(true)
                 view.upload.setActive(true)
                 var parts: [String] = []
@@ -632,36 +635,70 @@ final class Controller: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func apply(download newDownload: Double?, upload newUpload: Double?, final: Bool) {
+    private func apply(download newDownload: Double?, upload newUpload: Double?) {
         // Providers measure one direction at a time; highlight whichever moved.
         var downloadMoved = false
         var uploadMoved = false
-        if let sample = newDownload {
-            let value = smoothed(sample, previous: smoothedDownload, final: final)
-            smoothedDownload = value
-            downloadMoved = abs(value - view.download.value) > 0.05
-            view.download.set(value: value, animated: true)
+        if let value = newDownload {
+            let clean = max(0, value)
+            downloadMoved = !hasDownload || abs(clean - targetDownload) > 0.05
+            targetDownload = clean
+            hasDownload = true
         }
-        if let sample = newUpload {
-            let value = smoothed(sample, previous: smoothedUpload, final: final)
-            smoothedUpload = value
-            uploadMoved = abs(value - view.upload.value) > 0.05
-            view.upload.set(value: value, animated: true)
+        if let value = newUpload {
+            let clean = max(0, value)
+            uploadMoved = !hasUpload || abs(clean - targetUpload) > 0.05
+            targetUpload = clean
+            hasUpload = true
         }
         if downloadMoved != uploadMoved {
             view.download.setActive(downloadMoved)
             view.upload.setActive(uploadMoved)
         }
+    }
+
+    private func startDisplayLink() {
+        displayLink = view.displayLink(target: self, selector: #selector(updateDisplay))
+        displayLink?.add(to: .main, forMode: .common)
+    }
+
+    /// The provider emits sparse, noisy samples. Follow their latest values at
+    /// display refresh rate so digits, arcs, and needles all move as one surface.
+    @objc private func updateDisplay() {
+        guard !closing else { return }
+        let now = CACurrentMediaTime()
+        let dt = min(0.05, max(0.001, now - lastFrameTime))
+        lastFrameTime = now
+
+        if hasDownload {
+            view.download.set(value: eased(view.download.value, toward: targetDownload, dt: dt),
+                              animated: false)
+        }
+        if hasUpload {
+            view.upload.set(value: eased(view.upload.value, toward: targetUpload, dt: dt),
+                            animated: false)
+        }
         applyScale()
     }
 
-    /// Provider progress values are instantaneous samples and can swing wildly.
-    /// A modest EMA keeps the live readout calm while terminal results stay exact.
-    private func smoothed(_ sample: Double, previous: Double?, final: Bool) -> Double {
-        let value = max(0, sample)
-        guard !final, let previous else { return value }
-        let alpha = value < previous ? 0.16 : 0.28
-        return previous + (value - previous) * alpha
+    private func eased(_ current: Double, toward target: Double, dt: Double) -> Double {
+        let response = target >= current ? 7.5 : 4.0
+        let next = current + (target - current) * (1 - exp(-response * dt))
+        return abs(target - next) < 0.02 ? target : next
+    }
+
+    private func settle(download: Double?, upload: Double?) {
+        if let value = download {
+            targetDownload = max(0, value)
+            hasDownload = true
+            view.download.set(value: targetDownload, animated: false)
+        }
+        if let value = upload {
+            targetUpload = max(0, value)
+            hasUpload = true
+            view.upload.set(value: targetUpload, animated: false)
+        }
+        applyScale()
     }
 
     /// Nice round full-scale values, shared by both dials and never shrinking
@@ -680,6 +717,8 @@ final class Controller: NSObject, NSApplicationDelegate {
         finished = true
         timer?.invalidate()
         timer = nil
+        displayLink?.invalidate()
+        displayLink = nil
         guard options.linger > 0 else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + options.linger) { [weak self] in
             self?.dismiss()
@@ -690,6 +729,8 @@ final class Controller: NSObject, NSApplicationDelegate {
         guard !closing else { return }
         closing = true
         timer?.invalidate()
+        displayLink?.invalidate()
+        displayLink = nil
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.15
             for window in windows { window.animator().alphaValue = 0 }
