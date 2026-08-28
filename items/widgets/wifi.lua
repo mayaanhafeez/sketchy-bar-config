@@ -11,6 +11,9 @@ local MACWIFI = os.getenv("MACWIFI_BIN") or "/usr/local/bin/macwifi"
 
 local width = 336
 local pad = 12
+local NETWORK_PAGE_SIZE = 6
+local NETWORK_ROW_HEIGHT = 32
+local NETWORK_NAME_WIDTH = 190
 
 -- Wi-Fi panel, ported from omarchy's network panel (Panel.qml) onto a
 -- sketchybar popup. Everything macwifi can do is wired up (status, scan,
@@ -127,6 +130,10 @@ local function block(height, color)
   }
 end
 
+-- Every popup row, in creation order, so the scroll wheel can be wired to all
+-- of them at the bottom of the file.
+local popup_rows = {}
+
 -- Shared by every popup row, so the icon and label boxes below can be
 -- positioned in absolute pixels. `inset` pulls the whole row (its background
 -- included) in from both edges of the panel.
@@ -136,7 +143,9 @@ local function row(name, inset, opts)
   opts.padding_left = inset
   opts.padding_right = inset
   opts.scroll_texts = false
-  return sbar.add("item", name, opts)
+  local item = sbar.add("item", name, opts)
+  popup_rows[#popup_rows + 1] = item
+  return item
 end
 
 local gap_seq = 0
@@ -253,35 +262,36 @@ local scan_again = false
 
 -- ---------------------------------------------------------------- focus
 -- Keyboard focus ring over everything in the popup that does something: the
--- power switch, the speed-test button, then one entry per network row in the
--- order they are drawn. Rows are torn down and rebuilt on every scan, so the
--- ring is rebuilt with them and focus is re-anchored by SSID rather than by
--- index -- a network moving up the list as its signal changes must not drag
--- the highlight along with it.
-local focus_index = 1
-local focus_entries = {}
-local focus_ssid = nil
+-- power switch, the speed-test button, then every network in the scan, in the
+-- order the list sorts them.
+--
+-- Focus is a value -- "power", "speed", or an SSID -- rather than an index
+-- into the drawn rows. The rows are a scrolling window over the networks, so
+-- an index into them means something different after every scroll and after
+-- every scan re-sort; an SSID keeps the highlight on the network the user
+-- actually picked, on screen or not.
+local focus = { kind = "power" }
+local sorted_networks = {}
 
-local function focused()
-  return focus_entries[focus_index]
-end
+-- First network visible in the row window.
+local network_offset = 1
 
 local function focused_kind()
-  local entry = focused()
-  return entry and entry.kind or ""
+  return focus.kind
 end
 
--- The two controls above the network list are always focusable; the network
--- entries are appended to these by render_networks.
-local POWER_ENTRY = { kind = "power" }
-local SPEED_ENTRY = { kind = "speed" }
-focus_entries = { POWER_ENTRY, SPEED_ENTRY }
+local function find_network(ssid)
+  for _, net in ipairs(sorted_networks) do
+    if net.ssid == ssid then return net end
+  end
+  return nil
+end
 
 -- A network row carries three states in one background colour: focused, then
 -- connected, then plain. Hover paints over this and hands it back on exit.
-local function entry_color(entry)
-  if entry == focused() then return colors.highlight_med end
-  return entry.connected and colors.bg2 or colors.transparent
+local function row_color(net)
+  if focus.kind == "network" and focus.ssid == net.ssid then return colors.highlight_med end
+  return net.connected and colors.bg2 or colors.transparent
 end
 
 -- Assigned further down, once the rows it repaints exist.
@@ -291,6 +301,8 @@ local render_focus = function() end
 local render_networks
 local refresh
 local schedule_refresh
+local scroll_networks
+local paint_slot
 
 -- ---------------------------------------------------------------- actions
 local function clear_pending()
@@ -795,195 +807,212 @@ end
 
 -- ---------------------------------------------------------------- networks
 local nets_header
+local nets_footer
+local network_slots = {}
 
-local function add_network_row(index, net)
-  local connected = net.ssid == state.ssid
-  local pending = net.ssid == state.pending
-
+-- Everything about a row that sketchybar has to be told, flattened so an
+-- unchanged row can be recognised and skipped instead of re-sent.
+local function slot_text(net)
   local status = ""
   local status_color = colors.muted
-  if pending then
+  if net.ssid == state.pending then
     status = state.pending_kind == "disconnect" and "Disconnecting…"
       or state.pending_kind == "forget" and "Forgetting…"
       or "Connecting…"
     status_color = colors.gold
-  elseif connected then
+  elseif net.connected then
     status = "Connected"
+  elseif net.known then
+    -- The list used to carry KNOWN / OTHER section headers, but a header is a
+    -- row of its own height and scrolling one through a fixed window makes the
+    -- panel jump. The same fact rides along on the row instead.
+    status = "Saved"
   end
 
   if is_secured(net.sec) then
     status = status == "" and icons.wifi.lock or (status .. "  " .. icons.wifi.lock)
   end
 
-  local entry = {
-    kind = "network",
-    ssid = net.ssid,
-    sec = net.sec,
-    known = net.known,
-    connected = connected,
-  }
-  focus_entries[#focus_entries + 1] = entry
-  entry.index = #focus_entries
+  return bars(net.rssi) .. "  " .. net.ssid,
+    net.connected and colors.text or colors.subtle,
+    status,
+    status_color
+end
 
-  local net_row = row("wifi.net." .. index, 8, {
-    background = {
-      drawing = true,
-      height = connected and 34 or 32,
-      corner_radius = 8,
-      border_width = 0,
-      color = entry_color(entry),
-    },
-    icon = {
-      string = bars(net.rssi) .. "  " .. net.ssid,
-      width = 192,
-      align = "left",
-      padding_left = 12,
-      padding_right = 0,
-      font = font(SZ_NET, FONT_SEMI),
-      color = connected and colors.text or colors.subtle,
-    },
-    label = {
-      string = status,
-      width = width - 16 - 192,
-      align = "right",
-      padding_left = 0,
-      padding_right = 14,
-      font = font(SZ_PILL),
-      color = status_color,
-    },
+-- Background is repainted on its own by hover and by focus moves, so it is
+-- tracked separately from the text and never forces a full row rewrite.
+paint_slot = function(slot, color)
+  if slot.applied.bg == color then return end
+  slot.applied.bg = color
+  slot.item:set({ background = { color = color } })
+end
+
+local function render_slot(slot, net)
+  if not net then
+    if slot.net == nil then return end
+    slot.net = nil
+    slot.applied = {}
+    slot.item:set({ drawing = false })
+    return
+  end
+
+  slot.net = net
+  local name, name_color, status, status_color = slot_text(net)
+  local color = row_color(net)
+  local sig = table.concat({ name, tostring(name_color), status, tostring(status_color) }, "\31")
+  if slot.applied.sig == sig then
+    paint_slot(slot, color)
+    return
+  end
+  slot.applied.sig = sig
+  slot.applied.bg = color
+  slot.item:set({
+    drawing = true,
+    icon = { string = name, color = name_color },
+    label = { string = status, color = status_color },
+    background = { color = color },
   })
-
-  entry.item = net_row
-
-  net_row:subscribe("mouse.entered", function()
-    net_row:set({ background = { color = colors.bg2 } })
-  end)
-  net_row:subscribe("mouse.exited", function()
-    net_row:set({ background = { color = entry_color(entry) } })
-  end)
-  net_row:subscribe("mouse.clicked", function(env)
-    -- Clicking a row is also a way of pointing at it, so the keyboard picks up
-    -- where the mouse left off instead of from wherever it was before.
-    focus_index = entry.index
-    focus_ssid = entry.ssid
-    render_focus()
-    if env.BUTTON == "right" then
-      if not connected and net.known and is_secured(net.sec) then
-        forget_network(net.ssid)
-      end
-      return
-    end
-    if state.pending ~= "" then return end
-    if connected then
-      disconnect_network()
-    else
-      connect_network(net.ssid, is_secured(net.sec), net.known)
-    end
-  end)
 end
 
 render_networks = function()
-  sbar.remove("/wifi\\.net\\../")
-  sbar.remove("/wifi\\.section\\../")
-
-  -- The rows are gone, so their focus entries go with them; the two fixed
-  -- controls above the list survive.
-  focus_entries = { POWER_ENTRY, SPEED_ENTRY }
-
-  if nets_header then
-    nets_header:set({
-      drawing = state.scanning,
-      label = { string = "SCANNING WI-FI…" },
-    })
-  end
-
-  if not state.powered then
+  -- refresh() can land before the list below this function has been built.
+  if not nets_footer then
+    render_power()
+    render_speedtest()
     return
   end
 
   local nets = {}
-  for _, n in ipairs(state.networks) do
-    n.connected = n.ssid == state.ssid
-    nets[#nets + 1] = n
+  if state.powered then
+    for _, n in ipairs(state.networks) do
+      n.connected = n.ssid == state.ssid
+      nets[#nets + 1] = n
+    end
   end
 
+  -- Bucketing the signal keeps the order still. Raw RSSI wanders a few dB
+  -- between scans, and sorting on it directly had rows swapping places under
+  -- the pointer every few seconds; the SSID tiebreak makes the rest of the
+  -- order reproducible, which table.sort on its own does not guarantee.
   table.sort(nets, function(a, b)
     if a.connected ~= b.connected then return a.connected end
     if a.known ~= b.known then return a.known end
-    return a.rssi > b.rssi
+    local ba, bb = math.floor(a.rssi / 5), math.floor(b.rssi / 5)
+    if ba ~= bb then return ba > bb end
+    return a.ssid < b.ssid
   end)
+  sorted_networks = nets
 
-  local last_title = ""
-  local index = 0
-  for i, net in ipairs(nets) do
-    local title = ""
-    if net.known and i == 1 then
-      title = "KNOWN NETWORKS"
-    elseif not net.known and (i == 1 or nets[i - 1].known) then
-      title = "OTHER NETWORKS"
-    end
-    if title ~= "" and title ~= last_title then
-      last_title = title
-      section_header(title)
-    end
-    add_network_row(index, net)
-    index = index + 1
+  -- Focus is held as an SSID, so a network that dropped out of the scan (or
+  -- the radio going off under it) hands the ring back to the power switch.
+  if focus.kind == "network" and not find_network(focus.ssid) then
+    focus = { kind = "power" }
   end
 
-  spacer(10, "wifi.section.pad")
+  local max_offset = math.max(1, #nets - NETWORK_PAGE_SIZE + 1)
+  network_offset = math.max(1, math.min(network_offset, max_offset))
+  local last_visible = math.min(#nets, network_offset + NETWORK_PAGE_SIZE - 1)
 
-  -- Re-anchor onto the same network the user was on, wherever the new sort
-  -- order put it. If it is gone -- out of range, or a scan dropped it -- focus
-  -- falls back to the top of the list.
-  if focus_ssid then
-    local found = nil
-    for i, entry in ipairs(focus_entries) do
-      if entry.ssid == focus_ssid then found = i break end
-    end
-    focus_index = found or 1
-    if not found then focus_ssid = nil end
-  elseif focus_index > #focus_entries then
-    focus_index = 1
+  for slot_index, slot in ipairs(network_slots) do
+    render_slot(slot, nets[network_offset + slot_index - 1])
   end
-  render_focus()
+
+  nets_header:set({
+    label = { string = state.scanning and "SCANNING WI-FI…" or "NETWORKS" },
+  })
+
+  local readout = ""
+  if #nets > NETWORK_PAGE_SIZE then
+    readout = (network_offset > 1 and "↑" or " ")
+      .. "     " .. network_offset .. "–" .. last_visible .. " of " .. #nets .. "     "
+      .. (last_visible < #nets and "↓" or " ")
+  end
+  nets_footer:set({ label = { string = readout } })
+
+  render_power()
+  render_speedtest()
+end
+
+-- SCROLL_DELTA is a line count, not a pixel count, and sketchybar has already
+-- summed every event of the last 150ms into it before handing it over -- so
+-- one delivery is one deliberate flick of the wheel and its magnitude is worth
+-- honouring. The old handler threw the magnitude away and moved a single row
+-- per delivery, which is what made a fast scroll feel like it was ignoring
+-- most of the gesture. A page is the most one delivery may move: past that the
+-- list has jumped somewhere the eye cannot follow.
+scroll_networks = function(delta)
+  local max_offset = math.max(1, #sorted_networks - NETWORK_PAGE_SIZE + 1)
+  if max_offset == 1 then return end
+
+  -- Positive delta is a scroll towards the top of the list.
+  local rows = -delta
+  if rows > NETWORK_PAGE_SIZE then rows = NETWORK_PAGE_SIZE
+  elseif rows < -NETWORK_PAGE_SIZE then rows = -NETWORK_PAGE_SIZE end
+
+  local next_offset = math.max(1, math.min(network_offset + rows, max_offset))
+  if next_offset == network_offset then return end
+  network_offset = next_offset
+  -- Scrolling moves the viewport and nothing else: the keyboard stays on the
+  -- network it was on, visible or not.
+  render_networks()
 end
 
 -- ---------------------------------------------------------------- keyboard
--- Focus is drawn by repainting every focusable row, not by tracking the one
--- that changed: the network rows are recreated often enough that a diff would
--- be chasing stale item handles.
+-- Focus is drawn by repainting the visible slots; the two fixed controls draw
+-- their own focus state from `focus`.
 render_focus = function()
-  for _, entry in ipairs(focus_entries) do
-    if entry.item then
-      entry.item:set({ background = { color = entry_color(entry) } })
-    end
+  for _, slot in ipairs(network_slots) do
+    if slot.net then paint_slot(slot, row_color(slot.net)) end
   end
   render_power()
   render_speedtest()
 end
 
+-- Where the current focus sits in the ring: 1 power, 2 speed test, then one
+-- position per network in list order.
+local function focus_position()
+  if focus.kind == "power" then return 1 end
+  if focus.kind == "speed" then return 2 end
+  for i, net in ipairs(sorted_networks) do
+    if net.ssid == focus.ssid then return i + 2 end
+  end
+  return 1
+end
+
 local function move_focus(delta)
-  local count = #focus_entries
-  if count == 0 then return end
-  focus_index = ((focus_index - 1 + delta) % count) + 1
-  focus_ssid = focused() and focused().ssid or nil
-  render_focus()
+  local total = #sorted_networks + 2
+  local position = ((focus_position() - 1 + delta) % total) + 1
+
+  if position == 1 then
+    focus = { kind = "power" }
+  elseif position == 2 then
+    focus = { kind = "speed" }
+  else
+    local index = position - 2
+    focus = { kind = "network", ssid = sorted_networks[index].ssid }
+    -- Drag the viewport along only as far as it takes to show the new row.
+    if index < network_offset then
+      network_offset = index
+    elseif index > network_offset + NETWORK_PAGE_SIZE - 1 then
+      network_offset = index - NETWORK_PAGE_SIZE + 1
+    end
+  end
+  render_networks()
 end
 
 -- Enter does whatever a left click on the focused row would do.
 local function activate_focus()
-  local entry = focused()
-  if not entry then return end
-  if entry.kind == "power" then
+  if focus.kind == "power" then
     toggle_power()
-  elseif entry.kind == "speed" then
+  elseif focus.kind == "speed" then
     run_speedtest()
-  elseif entry.kind == "network" then
-    if state.pending ~= "" then return end
-    if entry.connected then
+  elseif focus.kind == "network" then
+    local net = find_network(focus.ssid)
+    if not net or state.pending ~= "" then return end
+    if net.connected then
       disconnect_network()
     else
-      connect_network(entry.ssid, is_secured(entry.sec), entry.known)
+      connect_network(net.ssid, is_secured(net.sec), net.known)
     end
   end
 end
@@ -1011,11 +1040,18 @@ end
 local function apply_scan(out)
   if not (out or ""):match("^ok=1\n") then return false end
   local networks = {}
+  local by_ssid = {}
   for line in (out or ""):gmatch("([^\n]+)") do
     local ssid, rssi, ch, sec, bssid, known =
       line:match("^(.-)\t(.*)\t(.*)\t(.*)\t(.*)\t(.*)$")
-    if ssid then
-      networks[#networks + 1] = {
+    -- macwifi scans per BSSID, so a mesh or a dual-band AP shows up once per
+    -- radio under one SSID. The list keys off the SSID, so collapse them to
+    -- the strongest sighting rather than drawing the same name several times.
+    -- Every AP that does not broadcast its name comes back under the same
+    -- "<hidden>" placeholder -- eighty-odd of them here -- and none of them
+    -- can be joined by name, so they are dropped rather than deduplicated.
+    if ssid and ssid ~= "" and ssid ~= "<hidden>" then
+      local net = {
         ssid = ssid,
         rssi = tonumber(rssi) or -100,
         ch = tonumber(ch) or 0,
@@ -1023,6 +1059,13 @@ local function apply_scan(out)
         bssid = bssid,
         known = known == "1",
       }
+      local seen = by_ssid[ssid]
+      if not seen then
+        by_ssid[ssid] = net
+        networks[#networks + 1] = net
+      elseif net.rssi > seen.rssi then
+        seen.rssi, seen.ch, seen.bssid = net.rssi, net.ch, net.bssid
+      end
     end
   end
   state.networks = networks
@@ -1033,7 +1076,9 @@ local function render_all()
   render_bar()
   render_hero()
   render_details()
-  render_power()
+  -- The list carries the connected row and the power-off empty state, so a
+  -- status-only refresh has to reach it too.
+  render_networks()
 end
 
 local function scan_networks()
@@ -1080,10 +1125,83 @@ schedule_refresh = function(sec)
 end
 
 -- --------------------------------------------------------- networks header
--- Only drawn while a scan is in flight; the KNOWN / OTHER headers below it
--- carry the labelling once results land.
-nets_header = section_header("SCANNING WI-FI…", "wifi.nets.hdr")
-nets_header:set({ drawing = false })
+-- Always drawn, so a scan starting or finishing cannot change the panel's
+-- height under the pointer.
+nets_header = section_header("NETWORKS", "wifi.nets.hdr")
+
+-- A window of reusable rows over `sorted_networks`. They are created once,
+-- with every fixed property (box widths, fonts, alignment, row height) already
+-- in place, so scrolling only ever rewrites the two strings and their colours.
+-- Creating them fully formed also keeps icon.drawing/label.drawing on: those
+-- two are sticky in sketchybar, and a row built from the shared `hidden` stub
+-- would never draw its text again no matter what string was set on it.
+for i = 1, NETWORK_PAGE_SIZE do
+  local slot = { net = nil, applied = {} }
+  slot.item = row("wifi.net.slot." .. i, 8, {
+    drawing = false,
+    icon = {
+      drawing = true,
+      string = "",
+      width = NETWORK_NAME_WIDTH,
+      align = "left",
+      padding_left = 12,
+      padding_right = 0,
+      font = font(SZ_NET, FONT_SEMI),
+      color = colors.subtle,
+    },
+    label = {
+      drawing = true,
+      string = "",
+      width = width - 16 - NETWORK_NAME_WIDTH,
+      align = "right",
+      padding_left = 0,
+      padding_right = 14,
+      font = font(SZ_PILL),
+      color = colors.muted,
+    },
+    background = {
+      drawing = true,
+      height = NETWORK_ROW_HEIGHT,
+      corner_radius = 8,
+      border_width = 0,
+      color = colors.transparent,
+    },
+  })
+  slot.item:subscribe("mouse.entered", function()
+    if slot.net then paint_slot(slot, colors.bg2) end
+  end)
+  slot.item:subscribe("mouse.exited", function()
+    if slot.net then paint_slot(slot, row_color(slot.net)) end
+  end)
+  slot.item:subscribe("mouse.clicked", function(env)
+    local net = slot.net
+    if not net then return end
+    -- Clicking a row is also a way of pointing at it, so the keyboard picks up
+    -- where the mouse left off instead of from wherever it was before.
+    focus = { kind = "network", ssid = net.ssid }
+    render_focus()
+    if env.BUTTON == "right" then
+      if not net.connected and net.known and is_secured(net.sec) then
+        forget_network(net.ssid)
+      end
+      return
+    end
+    if state.pending ~= "" then return end
+    if net.connected then
+      disconnect_network()
+    else
+      connect_network(net.ssid, is_secured(net.sec), net.known)
+    end
+  end)
+  network_slots[#network_slots + 1] = slot
+end
+
+-- Scroll position readout. Also always drawn, for the same reason as the
+-- header: a list that grows past the window must not shove the panel.
+nets_footer = section_header("", "wifi.nets.footer")
+nets_footer:set({ label = { align = "center", color = colors.muted } })
+
+spacer(8, "wifi.nets.pad")
 
 -- ---------------------------------------------------------------- events
 local function close_popup()
@@ -1117,8 +1235,8 @@ local function toggle_popup()
   end
   -- Every open starts on the power switch, so the first arrow press always
   -- moves somewhere predictable.
-  focus_index = 1
-  focus_ssid = nil
+  focus = { kind = "power" }
+  network_offset = 1
   render_focus()
   nav.start()
 
@@ -1140,6 +1258,18 @@ wifi:subscribe("mouse.clicked", function(env)
   if env.BUTTON ~= "left" then return end
   toggle_popup()
 end)
+
+-- The wheel drives the network list from anywhere in the panel. Binding it to
+-- the network rows alone meant hunting for them with the pointer, and a row
+-- that scrolled away took its own scroll target with it.
+local function on_scroll(env)
+  local delta = tonumber(env.SCROLL_DELTA) or 0
+  if delta ~= 0 then scroll_networks(delta) end
+end
+
+for _, item in ipairs(popup_rows) do
+  item:subscribe("mouse.scrolled", on_scroll)
+end
 
 -- Opens the panel from anywhere: `sketchybar --trigger wifi_popup_toggle`,
 -- which is how the skhd binding reaches it. Same path as a click, so the panel
