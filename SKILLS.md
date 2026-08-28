@@ -33,7 +33,8 @@ themes/*.lua          10 palettes (rose_pine, catppuccin_mocha, tokyo_night, …
 items/init.lua        requires apple, spaces, calendar, widgets, media
 items/widgets/init.lua  battery, volume, wifi, bluetooth, cpu, vorssaint, claude, codex
 helpers/init.lua      sets package.cpath for sketchybar_lua/?.so, runs `make` in helpers/
-helpers/*.sh|*.py     data providers (wifi scan, claude/codex usage, agent status)
+helpers/*.sh|*.py     data providers (wifi scan, claude/codex usage, agent status,
+                      low power mode)
 helpers/*.command     double-clickable launchers (btop, wifi UI)
 helpers/menus/        C binary `bin/menus` — reads/clicks macOS menu bar items
 helpers/popup_keys.lua  Lua side of popup keyboard control (§4.6)
@@ -550,6 +551,10 @@ Rules that fall out of this:
    Repaint every focusable row on each change rather than tracking the one that moved.
 4. Focus needs a colour that isn't already spoken for. `wifi.lua` uses `highlight_med`
    for network rows, and a border on the power pill, whose fill already means on/off.
+5. **Release the keyboard before anything that prompts.** The grabber holds key focus, so
+   an `osascript` dialog (the Wi-Fi password, the Low Power Mode authorization) cannot be
+   typed into while it is up. Call `keys.stop_all()` first and `nav.start()` again in the
+   callback if the popup is still open — `battery.lua` does both.
 
 **Opening a popup without the mouse.** Each panel also registers a custom event that runs
 the same function its click handler does, so a hotkey daemon can open it and land in the
@@ -560,12 +565,17 @@ same state a click would:
 | `wifi_popup_toggle` | toggles the Wi-Fi panel |
 | `volume_popup_toggle` | toggles the volume panel |
 | `agents_popup_toggle` | toggles the Claude/Codex panel (ignored while the widget is hidden) |
+| `battery_popup_toggle` | toggles the battery panel |
 | `btop_launch` | same as clicking the CPU widget |
+| `bluetooth_settings` | same as clicking the Bluetooth widget |
+| `calendar_open` | opens Calendar, as clicking the clock does |
 
 The bindings live in `~/.skhdrc` (outside this repo) as
-`alt + ctrl - w : sketchybar --trigger wifi_popup_toggle`, and so on for `v`, `a` and `t`.
-Route a hotkey through the widget's own toggle rather than setting `popup.drawing`
-directly from the CLI — the toggle is what starts the key grabber and resets focus.
+`alt + ctrl - w : sketchybar --trigger wifi_popup_toggle`, and so on for `v`, `a`, `p`,
+`t`, `b` and `cmd + alt + ctrl - d`. Route a hotkey through the widget's own handler
+rather than setting `popup.drawing` or re-typing the command in `~/.skhdrc` — for a popup
+the toggle is what starts the key grabber and resets focus, and for the rest it keeps one
+definition of what the widget does.
 
 ### 4.7 How to actually get this right
 
