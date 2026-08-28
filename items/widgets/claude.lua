@@ -655,12 +655,17 @@ local last_detail = 0
 -- Assigned once collapse() exists, since the key handler closes the popup.
 local nav
 
+-- Whether the bar item is currently drawn. The widget hides itself when no
+-- agent is running, and a popup has nothing to hang off then.
+local widget_active = false
+
 local function update_visibility()
   sbar.exec(status_cmd, function(result)
     local state = result:match("(%a+)")
     if not state then return end
 
     local active = state ~= "none"
+    widget_active = active
     claude:set({ drawing = active })
 
     if not active then
@@ -696,21 +701,34 @@ nav = keys.bind("claude", function(key)
   end
 end)
 
+local function toggle_popup()
+  if claude:query().popup.drawing == "on" then
+    collapse()
+    return
+  end
+  last_detail = os.time()
+  if current_tab == "codex" and _G.refresh_codex then _G.refresh_codex() end
+  refresh_detail(function()
+    claude:set({ popup = { drawing = true } })
+    nav.start()
+  end)
+end
+
 claude:subscribe("mouse.clicked", function(env)
   if env.BUTTON == "right" then
     collapse()
     return
   end
-  if claude:query().popup.drawing == "on" then
-    collapse()
-  else
-    last_detail = os.time()
-    if current_tab == "codex" and _G.refresh_codex then _G.refresh_codex() end
-    refresh_detail(function()
-      claude:set({ popup = { drawing = true } })
-      nav.start()
-    end)
-  end
+  toggle_popup()
+end)
+
+-- What the skhd binding hits: `sketchybar --trigger agents_popup_toggle`.
+-- Ignored while the widget is hidden, since there is no icon on the bar for
+-- the panel to drop out of.
+sbar.add("event", "agents_popup_toggle")
+claude:subscribe("agents_popup_toggle", function()
+  if not widget_active then return end
+  toggle_popup()
 end)
 
 claude:subscribe("mouse.exited.global", collapse)

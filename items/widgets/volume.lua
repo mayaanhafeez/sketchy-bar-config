@@ -226,3 +226,11 @@ end
 
 volume_icon:subscribe("mouse.clicked", volume_toggle_details)
 volume_percent:subscribe("mouse.exited.global", volume_collapse_details)
+
+-- Reachable from anywhere: `sketchybar --trigger volume_popup_toggle`, which
+-- is how the skhd binding opens it. The handler fakes the left click the
+-- toggle expects, since the right-click branch opens System Settings.
+sbar.add("event", "volume_popup_toggle")
+volume_icon:subscribe("volume_popup_toggle", function()
+  volume_toggle_details({ BUTTON = "left" })
+end)

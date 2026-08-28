@@ -1107,16 +1107,7 @@ nav = keys.bind("wifi", function(key)
   end
 end)
 
-wifi:subscribe("mouse.clicked", function(env)
-  -- Right click opens the full macwifi TUI. There is no `mouse.right` event in
-  -- sketchybar -- the button arrives as $BUTTON on mouse.clicked -- so this has
-  -- to branch here rather than be its own subscription.
-  if env.BUTTON == "right" then
-    sbar.exec(sh(config_dir .. "/helpers/wifi_launch.command"))
-    return
-  end
-  if env.BUTTON ~= "left" then return end
-
+local function toggle_popup()
   local drawing = wifi:query().popup.drawing
   popup_open = drawing == "off"
   wifi:set({ popup = { drawing = "toggle" } })
@@ -1136,7 +1127,25 @@ wifi:subscribe("mouse.clicked", function(env)
   -- whether it can run a speed test now. This is the only moment the Run
   -- button is visible, so it is the only moment the answer matters.
   probe_speedtest()
+end
+
+wifi:subscribe("mouse.clicked", function(env)
+  -- Right click opens the full macwifi TUI. There is no `mouse.right` event in
+  -- sketchybar -- the button arrives as $BUTTON on mouse.clicked -- so this has
+  -- to branch here rather than be its own subscription.
+  if env.BUTTON == "right" then
+    sbar.exec(sh(config_dir .. "/helpers/wifi_launch.command"))
+    return
+  end
+  if env.BUTTON ~= "left" then return end
+  toggle_popup()
 end)
+
+-- Opens the panel from anywhere: `sketchybar --trigger wifi_popup_toggle`,
+-- which is how the skhd binding reaches it. Same path as a click, so the panel
+-- comes up already focused and ready for the arrow keys.
+sbar.add("event", "wifi_popup_toggle")
+wifi:subscribe("wifi_popup_toggle", toggle_popup)
 
 wifi:subscribe({ "wifi_change", "system_woke" }, function()
   refresh(false)

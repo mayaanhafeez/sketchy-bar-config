@@ -551,6 +551,22 @@ Rules that fall out of this:
 4. Focus needs a colour that isn't already spoken for. `wifi.lua` uses `highlight_med`
    for network rows, and a border on the power pill, whose fill already means on/off.
 
+**Opening a popup without the mouse.** Each panel also registers a custom event that runs
+the same function its click handler does, so a hotkey daemon can open it and land in the
+same state a click would:
+
+| Event | Effect |
+| --- | --- |
+| `wifi_popup_toggle` | toggles the Wi-Fi panel |
+| `volume_popup_toggle` | toggles the volume panel |
+| `agents_popup_toggle` | toggles the Claude/Codex panel (ignored while the widget is hidden) |
+| `btop_launch` | same as clicking the CPU widget |
+
+The bindings live in `~/.skhdrc` (outside this repo) as
+`alt + ctrl - w : sketchybar --trigger wifi_popup_toggle`, and so on for `v`, `a` and `t`.
+Route a hotkey through the widget's own toggle rather than setting `popup.drawing`
+directly from the CLI — the toggle is what starts the key grabber and resets focus.
+
 ### 4.7 How to actually get this right
 
 The failure mode is deriving geometry from first principles and being confidently wrong.
