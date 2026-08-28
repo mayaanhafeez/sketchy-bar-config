@@ -29,6 +29,14 @@ local cal = sbar.add("item", {
 
 local spacer_after = sbar.add("item", { position = "right", width = 2 })
 
+-- What the skhd binding hits: `sketchybar --trigger calendar_open`. The click
+-- stays a click_script, which sketchybar runs itself without a trip through
+-- Lua, so the command lives in both places rather than neither.
+sbar.add("event", "calendar_open")
+cal:subscribe("calendar_open", function()
+  sbar.exec("open -a 'Calendar'")
+end)
+
 local function update_position(display_type)
   if display_type == "external" then
     cal:set({ position = "center" })

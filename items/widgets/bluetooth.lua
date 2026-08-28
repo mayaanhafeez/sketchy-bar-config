@@ -10,6 +10,13 @@ local bluetooth = sbar.add("item", "widgets.bluetooth", {
   background = { border_width = 0 },
 })
 
-bluetooth:subscribe("mouse.clicked", function()
+local function open_settings()
   sbar.exec("open 'x-apple.systempreferences:com.apple.BluetoothSettings'")
-end)
+end
+
+bluetooth:subscribe("mouse.clicked", open_settings)
+
+-- What the skhd binding hits: `sketchybar --trigger bluetooth_settings` is the
+-- same as clicking the widget.
+sbar.add("event", "bluetooth_settings")
+bluetooth:subscribe("bluetooth_settings", open_settings)
