@@ -36,6 +36,8 @@ helpers/init.lua      sets package.cpath for sketchybar_lua/?.so, runs `make` in
 helpers/*.sh|*.py     data providers (wifi scan, claude/codex usage, agent status)
 helpers/*.command     double-clickable launchers (btop, wifi UI)
 helpers/menus/        C binary `bin/menus` — reads/clicks macOS menu bar items
+helpers/popup_keys.lua  Lua side of popup keyboard control (§4.6)
+helpers/popup_keys/   Swift binary `bin/popup_keys` — holds key focus for an open popup
 helpers/event_providers/  C binaries: cpu_load, network_load (push events into the bar)
 ```
 
@@ -516,7 +518,56 @@ Two traps:
 Guard against re-entrancy while an action is in flight (`state.pending` in `wifi.lua`) —
 `sbar.exec` callbacks are asynchronous and a user can click again mid-flight.
 
-### 4.6 How to actually get this right
+### 4.6 Keyboard control
+
+SketchyBar windows never take key focus, so a popup cannot see a keystroke. The
+workaround is `helpers/popup_keys/bin/popup_keys` (Swift, built by `helpers/makefile`):
+while a popup is open it holds focus with an invisible 1×1 window and forwards arrows,
+return, tab and escape into the bar as `sketchybar --trigger <event> KEY=<name>`. It runs
+as an accessory app, needs no accessibility permission, exits on escape or when it loses
+focus, and hands focus back to the app it took it from.
+
+Wiring it up is `helpers/popup_keys.lua`:
+
+```lua
+local keys = require("helpers.popup_keys")
+
+local nav = keys.bind("wifi", function(key) ... end)  -- registers popup_key_wifi
+nav.start()   -- popup opened
+nav.stop()    -- popup closed
+```
+
+Rules that fall out of this:
+
+1. **Only one grabber runs at a time.** `start()` kills any other first; two would fight
+   over key focus. Every popup must `stop()` on *every* close path it has — the click
+   toggle, `mouse.exited.global`, and anything that hides the widget outright.
+2. **The listener is a bar item, not a popup item** (`keys.bind` adds it with
+   `updates = true`). A popup item stops processing events while hidden, which is exactly
+   when the escape keystroke arrives.
+3. **Keep a focus ring, don't diff.** Dynamic rows (§4.5) are destroyed on every rebuild,
+   so `wifi.lua` rebuilds its ring alongside its rows and re-anchors focus by SSID.
+   Repaint every focusable row on each change rather than tracking the one that moved.
+4. Focus needs a colour that isn't already spoken for. `wifi.lua` uses `highlight_med`
+   for network rows, and a border on the power pill, whose fill already means on/off.
+
+**Opening a popup without the mouse.** Each panel also registers a custom event that runs
+the same function its click handler does, so a hotkey daemon can open it and land in the
+same state a click would:
+
+| Event | Effect |
+| --- | --- |
+| `wifi_popup_toggle` | toggles the Wi-Fi panel |
+| `volume_popup_toggle` | toggles the volume panel |
+| `agents_popup_toggle` | toggles the Claude/Codex panel (ignored while the widget is hidden) |
+| `btop_launch` | same as clicking the CPU widget |
+
+The bindings live in `~/.skhdrc` (outside this repo) as
+`alt + ctrl - w : sketchybar --trigger wifi_popup_toggle`, and so on for `v`, `a` and `t`.
+Route a hotkey through the widget's own toggle rather than setting `popup.drawing`
+directly from the CLI — the toggle is what starts the key grabber and resets focus.
+
+### 4.7 How to actually get this right
 
 The failure mode is deriving geometry from first principles and being confidently wrong.
 The two files in this repo even record *different* mental models for how background
