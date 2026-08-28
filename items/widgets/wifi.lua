@@ -265,6 +265,8 @@ local focus_ssid = nil
 local network_offset = 1
 local sorted_networks = {}
 local network_focus_index = nil
+local generated_network_items = {}
+local scroll_locked = false
 
 local function focused()
   return focus_entries[focus_index]
@@ -831,7 +833,8 @@ local function add_network_row(index, net)
   focus_entries[#focus_entries + 1] = entry
   entry.index = #focus_entries
 
-  local net_row = row("wifi.net." .. index, 8, {
+  local name = "wifi.net." .. index
+  local net_row = row(name, 8, {
     background = {
       drawing = true,
       height = connected and 34 or 32,
@@ -858,6 +861,7 @@ local function add_network_row(index, net)
       color = status_color,
     },
   })
+  generated_network_items[#generated_network_items + 1] = name
 
   entry.item = net_row
 
@@ -896,8 +900,8 @@ local function add_network_row(index, net)
 end
 
 render_networks = function()
-  sbar.remove("/wifi\\.net\\../")
-  sbar.remove("/wifi\\.net_section\\../")
+  for _, name in ipairs(generated_network_items) do sbar.remove(name) end
+  generated_network_items = {}
 
   -- The rows are gone, so their focus entries go with them; the two fixed
   -- controls above the list survive.
@@ -954,13 +958,17 @@ render_networks = function()
     end
     if title ~= "" and title ~= last_title then
       last_title = title
+      local header = "wifi.net_section." .. tostring(section_seq + 1)
       section_header(title, "wifi.net_section")
+      generated_network_items[#generated_network_items + 1] = header
     end
     add_network_row(index, net)
     index = index + 1
   end
 
+  local padding = "wifi.section.pad." .. tostring(gap_seq + 1)
   spacer(10, "wifi.section.pad")
+  generated_network_items[#generated_network_items + 1] = padding
 
   -- Re-anchor onto the same network the user was on, wherever the new sort
   -- order put it. If it is gone -- out of range, or a scan dropped it -- focus
@@ -979,6 +987,7 @@ render_networks = function()
 end
 
 scroll_networks = function(delta)
+  if scroll_locked then return end
   local max_offset = math.max(1, #sorted_networks - NETWORK_PAGE_SIZE + 1)
   local next_offset = math.max(1, math.min(network_offset + delta, max_offset))
   if next_offset == network_offset then return end
@@ -987,6 +996,8 @@ scroll_networks = function(delta)
   network_focus_index = nil
   focus_index = 1
   render_networks()
+  scroll_locked = true
+  sbar.exec("sleep 0.12", function() scroll_locked = false end)
 end
 
 -- ---------------------------------------------------------------- keyboard
