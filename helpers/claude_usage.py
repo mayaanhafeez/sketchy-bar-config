@@ -86,8 +86,21 @@ def cached(name, ttl, produce):
 # --------------------------------------------------------------------------
 
 def which_claude():
-    for p in ("/opt/homebrew/bin/claude", "/usr/local/bin/claude",
-              os.path.join(HOME, ".local/bin/claude")):
+    import shutil
+    found = shutil.which("claude")
+    if found and os.access(found, os.X_OK):
+        return found
+    # sketchybar runs with a minimal PATH that may not include mise shims,
+    # so fall back to common install locations.
+    for p in (
+        "/opt/homebrew/bin/claude",
+        "/usr/local/bin/claude",
+        os.path.join(HOME, ".local/bin/claude"),
+        os.path.join(HOME, ".local/share/mise/shims/claude"),
+        os.path.join(HOME, ".local/share/mise/installs/claude-code/latest/claude"),
+        os.path.join(HOME, ".mise/shims/claude"),
+        os.path.join(HOME, ".claude/local/claude"),
+    ):
         if os.access(p, os.X_OK):
             return p
     return None
