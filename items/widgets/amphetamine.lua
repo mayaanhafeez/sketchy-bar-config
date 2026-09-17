@@ -11,6 +11,7 @@ local AMPHETAMINE = "'" .. config_dir .. "/helpers/amphetamine.sh'"
 -- lives in the icon's own padding instead.
 local amphetamine = sbar.add("item", "widgets.amphetamine", {
   position = "right",
+  drawing = false,
   icon = {
     string = icons.amphetamine.off,
     font = {
@@ -25,22 +26,53 @@ local amphetamine = sbar.add("item", "widgets.amphetamine", {
   label = { drawing = false },
   background = { border_width = 0 },
   update_freq = 5,
+  -- Load-bearing, and the whole reason hover works. `when_shown` -- the default
+  -- -- stops delivering events to an item that is not drawn, including the
+  -- hover events this one needs in order to come back, so hiding itself would
+  -- be a one-way trip.
+  updates = true,
 })
 
--- The cup keeps its spot either way and says which state it is in by its
--- shape: filled and at full strength while a session is up, outlined and
--- dimmed to the muted grey the rest of the bar uses for "off" when it is not.
+local active = false
+local hovering = false
+
+-- An idle Amphetamine is the ordinary state and does not earn permanent space,
+-- so the dimmed outline only surfaces while the cursor is on the bar. A running
+-- session is the thing worth catching out of the corner of an eye, so the
+-- filled cup stays put whether or not anyone is pointing at it.
+local function render()
+  amphetamine:set({
+    drawing = active or hovering,
+    icon = {
+      string = active and icons.amphetamine.on or icons.amphetamine.off,
+      color = active and colors.text or colors.grey,
+    },
+  })
+end
+
 local function refresh()
   sbar.exec(AMPHETAMINE .. " get", function(out)
-    local active = (out or ""):match("active=1") ~= nil
-    amphetamine:set({
-      icon = {
-        string = active and icons.amphetamine.on or icons.amphetamine.off,
-        color = active and colors.text or colors.grey,
-      },
-    })
+    active = (out or ""):match("active=1") ~= nil
+    render()
   end)
 end
+
+-- The ".global" pair is about the bar as a whole rather than this item: they
+-- fire over empty stretches of bar too, which is the only reason an item that
+-- has hidden itself is reachable again. Hover costs nothing to watch -- these
+-- arrive as events, so there is no cursor polling anywhere in here.
+amphetamine:subscribe("mouse.entered.global", function()
+  hovering = true
+  render()
+  -- The cup is about to become visible, so give it the current answer rather
+  -- than whatever the last routine tick left behind.
+  refresh()
+end)
+
+amphetamine:subscribe("mouse.exited.global", function()
+  hovering = false
+  render()
+end)
 
 -- Right-hand widget row on the built-in display, immediately left of the clock
 -- once the clock moves to the centre. Item order decides both, and for
@@ -56,6 +88,9 @@ local function update_position(display_type)
   end
 end
 
+-- Still polled, even though the cup is usually out of sight: a session can
+-- start or end from Amphetamine's own menu or a Trigger, and the bar should
+-- not be waiting on a hover to find that out.
 amphetamine:subscribe({ "routine", "forced", "system_woke" }, refresh)
 
 amphetamine:subscribe("display_change", function()
@@ -84,7 +119,6 @@ amphetamine:subscribe("amphetamine_toggle", toggle_session)
 
 display.detect(update_position)
 
--- routine only comes around every update_freq seconds, so without this an
--- active session would show the dimmed cup for the first few seconds after a
--- reload.
+-- routine only comes around every update_freq seconds, so without this a live
+-- session would go unmarked for the first few seconds after a reload.
 refresh()
