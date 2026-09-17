@@ -4,7 +4,10 @@ local display = require("helpers.display")
 
 local spacer_before = sbar.add("item", { position = "right", width = settings.group_paddings })
 
-local cal = sbar.add("item", {
+-- Named because the Amphetamine widget moves itself relative to this item
+-- when the clock is centred; an auto-generated item_N would not survive a
+-- reshuffle of the config.
+local cal = sbar.add("item", "calendar", {
   icon = {
     color = colors.white,
     padding_left = 8,

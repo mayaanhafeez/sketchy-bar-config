@@ -5,6 +5,7 @@ local icons = {
     apple = "􀣺",
     cpu = "􀫥",
     robot = "󰚩",
+    amphetamine = "󰅶",
 
     volume = {
       _100 = "􀊩",
@@ -46,6 +47,7 @@ local icons = {
     apple = "",
     cpu = "",
     robot = "󰚩",
+    amphetamine = "󰅶",
 
     volume = {
       _100 = "",
