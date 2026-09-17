@@ -6,12 +6,17 @@ local display = require("helpers.display")
 local config_dir = os.getenv("CONFIG_DIR") or (os.getenv("HOME") .. "/.config/sketchybar")
 local AMPHETAMINE = "'" .. config_dir .. "/helpers/amphetamine.sh'"
 
--- Deliberately no separate padding item: this one moves between the widget row
--- and the centred clock, and a sibling spacer would get left behind. The gap
--- lives in the icon's own padding instead.
+-- A fixed box rather than whatever each glyph happens to measure: the filled
+-- cup is a pixel wider than the outline, and the mirror below has to be able
+-- to match this width exactly for the clock to stay put.
+local CUP_WIDTH = 26
+
 local amphetamine = sbar.add("item", "widgets.amphetamine", {
   position = "right",
   drawing = false,
+  width = CUP_WIDTH,
+  padding_left = 0,
+  padding_right = 0,
   icon = {
     string = icons.amphetamine.off,
     font = {
@@ -20,8 +25,10 @@ local amphetamine = sbar.add("item", "widgets.amphetamine", {
       size = 12.0,
     },
     color = colors.grey,
-    padding_left = 4,
-    padding_right = 4,
+    width = CUP_WIDTH,
+    align = "center",
+    padding_left = 0,
+    padding_right = 0,
   },
   label = { drawing = false },
   background = { border_width = 0 },
@@ -33,21 +40,39 @@ local amphetamine = sbar.add("item", "widgets.amphetamine", {
   updates = true,
 })
 
+-- Centring centres the whole centre group, so a cup appearing to the clock's
+-- left drags the clock right by half its width. This sits on the clock's right
+-- and comes and goes with the cup, keeping the group symmetrical about the
+-- clock so the clock itself never moves. Only earns its keep while the clock is
+-- centred; in the widget row there is nothing to balance.
+local mirror = sbar.add("item", "widgets.amphetamine.mirror", {
+  position = "right",
+  drawing = false,
+  width = CUP_WIDTH,
+  padding_left = 0,
+  padding_right = 0,
+  icon = { drawing = false },
+  label = { drawing = false },
+})
+
 local active = false
 local hovering = false
+local centred = false
 
 -- An idle Amphetamine is the ordinary state and does not earn permanent space,
 -- so the dimmed outline only surfaces while the cursor is on the bar. A running
 -- session is the thing worth catching out of the corner of an eye, so the
 -- filled cup stays put whether or not anyone is pointing at it.
 local function render()
+  local visible = active or hovering
   amphetamine:set({
-    drawing = active or hovering,
+    drawing = visible,
     icon = {
       string = active and icons.amphetamine.on or icons.amphetamine.off,
       color = active and colors.text or colors.grey,
     },
   })
+  mirror:set({ drawing = centred and visible })
 end
 
 local function refresh()
@@ -79,13 +104,18 @@ end)
 -- right-anchored items the list runs right to left -- hence "after" the
 -- battery's trailing padding to land on the battery's left.
 local function update_position(display_type)
-  if display_type == "external" then
+  centred = display_type == "external"
+  if centred then
     amphetamine:set({ position = "center" })
-    sbar.exec("sketchybar --move widgets.amphetamine before calendar")
+    mirror:set({ position = "center" })
+    sbar.exec("sketchybar --move widgets.amphetamine before calendar"
+      .. " --move widgets.amphetamine.mirror after calendar")
   else
     amphetamine:set({ position = "right" })
+    mirror:set({ position = "right" })
     sbar.exec("sketchybar --move widgets.amphetamine after widgets.battery.padding")
   end
+  render()
 end
 
 -- Still polled, even though the cup is usually out of sight: a session can
