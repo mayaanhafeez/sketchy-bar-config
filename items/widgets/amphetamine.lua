@@ -5,11 +5,19 @@ local display = require("helpers.display")
 
 local config_dir = os.getenv("CONFIG_DIR") or (os.getenv("HOME") .. "/.config/sketchybar")
 local AMPHETAMINE = "'" .. config_dir .. "/helpers/amphetamine.sh'"
+local CURSOR_ON_BAR = "'" .. config_dir .. "/helpers/cursor_on_bar/bin/cursor_on_bar'"
 
 -- A fixed box rather than whatever each glyph happens to measure: the filled
 -- cup is a pixel wider than the outline, and the mirror below has to be able
 -- to match this width exactly for the clock to stay put.
 local CUP_WIDTH = 26
+
+-- Five seconds is plenty for a cup nobody is looking at. While the pointer is
+-- on the bar the same tick doubles as the hover safety net further down, so it
+-- runs often enough that a missed exit event is corrected before it registers
+-- as a stuck icon.
+local TICK_IDLE = 5
+local TICK_HOVER = 1
 
 local amphetamine = sbar.add("item", "widgets.amphetamine", {
   position = "right",
@@ -32,7 +40,7 @@ local amphetamine = sbar.add("item", "widgets.amphetamine", {
   },
   label = { drawing = false },
   background = { border_width = 0 },
-  update_freq = 5,
+  update_freq = TICK_IDLE,
   -- Load-bearing, and the whole reason hover works. `when_shown` -- the default
   -- -- stops delivering events to an item that is not drawn, including the
   -- hover events this one needs in order to come back, so hiding itself would
@@ -58,6 +66,7 @@ local mirror = sbar.add("item", "widgets.amphetamine.mirror", {
 local active = false
 local hovering = false
 local centred = false
+local bar_height = settings.height_external
 
 -- An idle Amphetamine is the ordinary state and does not earn permanent space,
 -- so the dimmed outline only surfaces while the cursor is on the bar. A running
@@ -86,18 +95,38 @@ end
 -- fire over empty stretches of bar too, which is the only reason an item that
 -- has hidden itself is reachable again. Hover costs nothing to watch -- these
 -- arrive as events, so there is no cursor polling anywhere in here.
-amphetamine:subscribe("mouse.entered.global", function()
-  hovering = true
+local function set_hovering(value)
+  if hovering == value then return end
+  hovering = value
+  amphetamine:set({ update_freq = value and TICK_HOVER or TICK_IDLE })
   render()
+end
+
+amphetamine:subscribe("mouse.entered.global", function()
+  set_hovering(true)
   -- The cup is about to become visible, so give it the current answer rather
   -- than whatever the last routine tick left behind.
   refresh()
 end)
 
 amphetamine:subscribe("mouse.exited.global", function()
-  hovering = false
-  render()
+  set_hovering(false)
 end)
+
+-- mouse.exited.global is how the cup normally learns to put itself away, but it
+-- does not always arrive: cross into sketchybar-toggle's trigger zone and the
+-- bar can be hidden out from under the pointer before sketchybar works out that
+-- it left, so the event is never sent and the cup sits there until something
+-- else disturbs it. Asking where the pointer actually is puts a floor under
+-- that. Only ever runs while the cup is up for hover reasons, so the usual case
+-- costs nothing, and a helper that is missing or unbuilt just leaves the old
+-- event-only behaviour in place.
+local function verify_hover()
+  if not hovering then return end
+  sbar.exec(CURSOR_ON_BAR .. " " .. bar_height, function(out)
+    if (out or ""):match("off") then set_hovering(false) end
+  end)
+end
 
 -- Right-hand widget row on the built-in display, immediately left of the clock
 -- once the clock moves to the centre. Item order decides both, and for
@@ -105,6 +134,7 @@ end)
 -- battery's trailing padding to land on the battery's left.
 local function update_position(display_type)
   centred = display_type == "external"
+  bar_height = centred and settings.height_external or settings.height_internal
   if centred then
     amphetamine:set({ position = "center" })
     mirror:set({ position = "center" })
@@ -121,7 +151,10 @@ end
 -- Still polled, even though the cup is usually out of sight: a session can
 -- start or end from Amphetamine's own menu or a Trigger, and the bar should
 -- not be waiting on a hover to find that out.
-amphetamine:subscribe({ "routine", "forced", "system_woke" }, refresh)
+amphetamine:subscribe({ "routine", "forced", "system_woke" }, function()
+  refresh()
+  verify_hover()
+end)
 
 amphetamine:subscribe("display_change", function()
   display.detect(update_position)

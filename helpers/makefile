@@ -6,3 +6,4 @@ all:
 	(cd wifi_panel && $(MAKE)) >/dev/null
 	(cd agents_panel && $(MAKE)) >/dev/null
 	(cd volume_panel && $(MAKE)) >/dev/null
+	(cd cursor_on_bar && $(MAKE)) >/dev/null
