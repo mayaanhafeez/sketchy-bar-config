@@ -240,38 +240,95 @@ enum Usage {
     }
 }
 
+/// Last-good script output, kept on disk between runs of the panel.
+///
+/// The panel is a fresh process on every open, and python3 plus either helper
+/// costs a few hundred milliseconds -- long enough that the window used to draw
+/// its "no subscriptions" notice first and fill in afterwards. So each run
+/// starts by replaying the previous run's raw output, which is on disk and
+/// parses in microseconds, and the live read swaps in behind it.
+///
+/// What is stored is the helpers' own `key=value` text rather than a decoded
+/// form: the parser is then the single reader of that format, and a cache file
+/// written by an older build still loads.
+enum Snapshot {
+    private static let dir = (("~/.cache/sketchybar/agents_panel" as NSString)
+        .expandingTildeInPath as String)
+
+    private static func path(_ id: String) -> String {
+        (dir as NSString).appendingPathComponent("\(id).txt")
+    }
+
+    static func read(_ id: String) -> String {
+        (try? String(contentsOfFile: path(id), encoding: .utf8)) ?? ""
+    }
+
+    static func write(_ id: String, _ raw: String) {
+        guard !raw.isEmpty else { return }
+        try? FileManager.default.createDirectory(atPath: dir,
+                                                 withIntermediateDirectories: true)
+        try? raw.write(toFile: path(id), atomically: true, encoding: .utf8)
+    }
+}
+
 @MainActor
 final class AgentStore: ObservableObject {
     @Published var providers: [Provider] = []
     @Published var selected = 0
+    /// False only on the very first run, before any snapshot exists. It keeps
+    /// the empty state from claiming there are no subscriptions when the truth
+    /// is that nothing has been read yet.
+    @Published var loaded = false
 
     private let opts: Options
     private let work = DispatchQueue(label: "agents_panel.load", qos: .userInitiated)
 
-    init(opts: Options) { self.opts = opts }
+    init(opts: Options) {
+        self.opts = opts
+        replay()
+    }
 
     var current: Provider? {
         providers.indices.contains(selected) ? providers[selected] : nil
     }
 
+    /// The cached render, put up synchronously during init so the first frame
+    /// the window draws is already the dashboard.
+    private func replay() {
+        let claude = Snapshot.read("claude")
+        let codex = Snapshot.read("codex")
+        guard !claude.isEmpty || !codex.isEmpty else { return }
+        apply(claude: claude, codex: codex)
+        loaded = true
+    }
+
     func load() {
         let dir = opts.helpers
-        let want = opts.provider
         work.async { [weak self] in
-            let claude = Usage.provider(id: "claude", name: "Claude",
-                                        from: Self.run(dir, "claude_usage.py"))
-            let codex = Usage.provider(id: "codex", name: "Codex",
-                                       from: Self.run(dir, "codex_usage.py"))
+            var claude = Self.run(dir, "claude_usage.py")
+            var codex = Self.run(dir, "codex_usage.py")
+            // A helper that fails outright returns nothing, and rendering that
+            // would read as "signed out" rather than as a failed read. Hold the
+            // last good answer instead, and leave it on disk for the next run.
+            if claude.isEmpty { claude = Snapshot.read("claude") } else { Snapshot.write("claude", claude) }
+            if codex.isEmpty { codex = Snapshot.read("codex") } else { Snapshot.write("codex", codex) }
             Task { @MainActor in
                 guard let self else { return }
-                // Keep the tab the user is on across a refresh; only the first
-                // load honours --provider.
-                let keep = self.current?.id
-                self.providers = [claude, codex]
-                let target = keep ?? want
-                self.selected = self.providers.firstIndex { $0.id == target } ?? 0
+                self.apply(claude: claude, codex: codex)
+                self.loaded = true
             }
         }
+    }
+
+    /// Parses both providers and installs them, holding whichever tab the user
+    /// is on. Only the first install -- cache replay or, failing that, the
+    /// first live read -- honours --provider.
+    private func apply(claude: String, codex: String) {
+        let keep = current?.id
+        providers = [Usage.provider(id: "claude", name: "Claude", from: claude),
+                     Usage.provider(id: "codex", name: "Codex", from: codex)]
+        let target = keep ?? opts.provider
+        selected = providers.firstIndex { $0.id == target } ?? 0
     }
 
     func select(_ i: Int) {
@@ -637,7 +694,7 @@ struct PanelView: View {
                 }
                 .id(p.id)
                 .transaction { $0.animation = nil }
-            } else {
+            } else if store.loaded {
                 notice("No AI coding subscriptions found.\nAgents show up here once you've used them.")
             }
         }
