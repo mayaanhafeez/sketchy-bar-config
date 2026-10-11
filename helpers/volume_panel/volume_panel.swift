@@ -196,13 +196,26 @@ final class AudioStore: ObservableObject {
 
     private let opts: Options
     private let work = DispatchQueue(label: "volume_panel.io", qos: .userInitiated)
+    /// Reads get their own queue: a load spawns five processes, and writes
+    /// queued behind it are what made a drag stall every couple of seconds.
+    private let reads = DispatchQueue(label: "volume_panel.reads", qos: .utility)
+
+    /// A drag fires far faster than osascript can keep up, so each channel has
+    /// at most one write in flight and only the newest level waits behind it.
+    private var pendingLevel: [Channel: Int] = [:]
+    private var writingLevel: Set<Channel> = []
+    /// Writes still out, and a counter bumped on every local change. A read
+    /// that overlaps either is stale and would yank the knob back mid-drag.
+    private var inFlight = 0
+    private var changes = 0
 
     init(opts: Options) { self.opts = opts }
 
     // ---------------------------------------------------------------- reads
 
     func load() {
-        work.async { [weak self] in
+        let started = changes
+        reads.async { [weak self] in
             guard let self else { return }
             let settings = Self.osascript("get volume settings") ?? ""
             let out = Self.field(settings, "output volume")
@@ -211,10 +224,12 @@ final class AudioStore: ObservableObject {
             let outDevices = self.devices(.output)
             let inDevices = self.devices(.input)
             Task { @MainActor in
-                if let out { self.outputVolume = out / 100 }
-                if let inp { self.inputVolume = inp / 100 }
-                if let inp, inp > 0 { self.inputRestore = inp / 100 }
-                self.outputMuted = muted
+                if self.inFlight == 0 && self.changes == started {
+                    if let out { self.outputVolume = out / 100 }
+                    if let inp { self.inputVolume = inp / 100 }
+                    if let inp, inp > 0 { self.inputRestore = inp / 100 }
+                    self.outputMuted = muted
+                }
                 self.outputDevices = outDevices
                 self.inputDevices = inDevices
             }
@@ -253,26 +268,20 @@ final class AudioStore: ObservableObject {
         let clamped = min(max(v, 0), 1)
         outputVolume = clamped                       // answer the drag immediately
         if clamped > 0 && outputMuted { outputMuted = false }
-        let percent = Int((clamped * 100).rounded())
-        work.async { [opts] in
-            _ = Self.osascript("set volume output volume \(percent)")
-            if percent > 0 { _ = Self.osascript("set volume without output muted") }
-            _ = opts    // silence unused capture in release builds
-        }
+        pushLevel(.output, Int((clamped * 100).rounded()))
     }
 
     func setInputVolume(_ v: Double) {
         let clamped = min(max(v, 0), 1)
         inputVolume = clamped
         if clamped > 0 { inputRestore = clamped }
-        let percent = Int((clamped * 100).rounded())
-        work.async { _ = Self.osascript("set volume input volume \(percent)") }
+        pushLevel(.input, Int((clamped * 100).rounded()))
     }
 
     func toggleOutputMute() {
         let next = !outputMuted
         outputMuted = next
-        work.async { _ = Self.osascript("set volume \(next ? "with" : "without") output muted") }
+        write("set volume \(next ? "with" : "without") output muted")
     }
 
     func toggleInputMute() {
@@ -290,10 +299,44 @@ final class AudioStore: ObservableObject {
         } else {
             inputVolume = inputRestore
         }
-        let restore = inputRestore
-        work.async {
-            _ = Self.osascript("set volume \(silence ? "with" : "without") output muted")
-            _ = Self.osascript("set volume input volume \(silence ? 0 : Int(restore * 100))")
+        write("set volume \(silence ? "with" : "without") output muted")
+        pushLevel(.input, silence ? 0 : Int((inputRestore * 100).rounded()))
+    }
+
+    /// Latest-wins: if a write for this channel is already out, the new level
+    /// just replaces whatever was waiting, and goes out when that one lands.
+    private func pushLevel(_ channel: Channel, _ percent: Int) {
+        changes += 1
+        pendingLevel[channel] = percent
+        guard !writingLevel.contains(channel) else { return }
+        writingLevel.insert(channel)
+        drainLevel(channel)
+    }
+
+    private func drainLevel(_ channel: Channel) {
+        guard let percent = pendingLevel.removeValue(forKey: channel) else {
+            writingLevel.remove(channel)
+            return
+        }
+        // One osascript per level; dragging up from zero also lifts the mute.
+        let script = switch channel {
+        case .output: percent > 0
+            ? "set volume output volume \(percent) without output muted"
+            : "set volume output volume 0"
+        case .input: "set volume input volume \(percent)"
+        }
+        write(script) { [weak self] in self?.drainLevel(channel) }
+    }
+
+    private func write(_ script: String, then done: (@MainActor () -> Void)? = nil) {
+        changes += 1
+        inFlight += 1
+        work.async { [weak self] in
+            _ = Self.osascript(script)
+            Task { @MainActor in
+                self?.inFlight -= 1
+                done?()
+            }
         }
     }
 
