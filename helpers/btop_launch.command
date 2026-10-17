@@ -1,6 +1,14 @@
 #!/bin/bash
-# Launches macwifi in a centered Ghostty window that fully quits on exit.
-DIR="$(cd "$(dirname "$0")" && pwd)"
+# Launches btop (RAM) or htop (CPU) in the same centered Ghostty window.
+MONITOR="${1:-btop}"
+case "$MONITOR" in
+  btop | htop) ;;
+  *) exit 2 ;;
+esac
+ARGS=("/opt/homebrew/bin/$MONITOR")
+if [ "$MONITOR" = htop ]; then
+  ARGS+=(--sort-key=PERCENT_CPU)
+fi
 GHOSTTY="/Applications/Ghostty.app/Contents/MacOS/ghostty"
 
 # Window size in CELLS (Ghostty has no pixel sizing).
@@ -25,6 +33,6 @@ exec "$GHOSTTY" \
   --window-height="$ROWS" \
   --window-position-x="$X" \
   --window-position-y="$Y" \
-  --title=btop \
+  --title="$MONITOR" \
   --font-size=15 \
-  -e "btop"
+  -e "${ARGS[@]}"

@@ -1,28 +1,13 @@
 return {
-  theme = "rose_pine", -- available: rose_pine, rose_pine_moon, catppuccin_mocha, tokyo_night, tokyo_night_storm, tomorrow_night_burns, andromeda, archriot, blueridge_dark, dark_xp, hinterlands, drive, last_horizon, matte_black, vanta_black
-
-  paddings = 3,
-  group_paddings = 5,
-
-  -- Bar height: external monitor (no notch) vs built-in display (notch)
-  height_external = 30,
-  height_internal = 38,
-
-  icons = "sf-symbols", -- alternatively available: NerdFont
-
-  -- This is a font configuration for SF Pro and SF Mono (installed manually)
-  -- font = require("helpers.default_font"),
-
-  -- Alternatively, this is a font config for JetBrainsMono Nerd Font
-  font = {
-    text = "JetBrainsMono Nerd Font", -- Used for text
-    numbers = "JetBrainsMono Nerd Font", -- Used for numbers
-    style_map = {
-      ["Regular"] = "Regular",
-      ["Semibold"] = "Medium",
-      ["Bold"] = "SemiBold",
-      ["Heavy"] = "Bold",
-      ["Black"] = "ExtraBold",
-    },
-  },
+  font = "JetBrainsMono Nerd Font",
+  font_size = 20,
+  height = 40,
+  panel_height = 30,
+  laptop_font_size = 16,
+  laptop_panel_height = 28,
+  corner_radius = 5,
+  popup_opacity = 0.85,
+  workspace_count = 9,
+  hyprspace = "/opt/homebrew/bin/hyprspace",
+  colors = require("colors"),
 }

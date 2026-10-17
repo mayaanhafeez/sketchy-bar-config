@@ -22,6 +22,7 @@
 
 import AppKit
 import SwiftUI
+import Combine
 
 // MARK: - palette
 
@@ -37,6 +38,7 @@ struct Palette {
 struct Options {
     var anchorX: CGFloat? = nil
     var anchorY: CGFloat? = nil
+    var displayID: UInt32? = nil
     var width: CGFloat = 340
     var radius: CGFloat = 10
     var font = "JetBrainsMono Nerd Font"
@@ -53,6 +55,7 @@ struct Options {
             switch arg {
             case "--anchor-x":   if let v = next, let d = Double(v) { o.anchorX = CGFloat(d); i += 1 }
             case "--anchor-y":   if let v = next, let d = Double(v) { o.anchorY = CGFloat(d); i += 1 }
+            case "--display-id": if let v = next, let d = UInt32(v) { o.displayID = d; i += 1 }
             case "--width":      if let v = next, let d = Double(v) { o.width = CGFloat(d); i += 1 }
             case "--radius":     if let v = next, let d = Double(v) { o.radius = CGFloat(d); i += 1 }
             case "--font":       if let v = next { o.font = v; i += 1 }
@@ -835,9 +838,17 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let store: AudioStore
     private var window: PanelWindow?
     private let previous = NSWorkspace.shared.frontmostApplication
+    private let targetScreen: NSScreen?
 
     @MainActor init(opts: Options) {
         self.opts = opts
+        self.targetScreen = opts.displayID.flatMap { id in
+            NSScreen.screens.first {
+                ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == id
+            }
+        } ?? NSScreen.screens.first {
+            NSMouseInRect(NSEvent.mouseLocation, $0.frame, false)
+        } ?? NSScreen.main
         self.store = AudioStore(opts: opts)
     }
 
@@ -884,7 +895,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func position(_ w: NSWindow, size: NSSize) {
-        guard let screen = NSScreen.main else { return }
+        guard let screen = targetScreen else { return }
         let f = screen.frame
         let margin: CGFloat = 6
         let x = min(max(f.minX + margin, (opts.anchorX ?? f.maxX - margin) - size.width),

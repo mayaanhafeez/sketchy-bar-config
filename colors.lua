@@ -1,12 +1,30 @@
-local settings = require("settings")
-local ok, colors = pcall(require, "themes." .. settings.theme)
+-- set-theme writes this shared file before reloading SketchyBar.
+local file = io.open(os.getenv("HOME") .. "/.config/theme", "r")
+local theme = file and file:read("*a"):match("^%s*([%w_-]+)%s*$")
+if file then file:close() end
+
+local ok, palette = false, nil
+if theme then
+  ok, palette = pcall(require, "themes." .. theme:gsub("-", "_"))
+end
 if not ok then
-  colors = require("themes.rose_pine")
+  io.stderr:write("SketchyBar: missing palette for " .. (theme or "current theme") .. "; using rose-pine\n")
+  palette = require("themes.rose_pine")
 end
 
-colors.with_alpha = function(color, alpha)
-  if alpha > 1.0 or alpha < 0.0 then return color end
-  return (color & 0x00ffffff) | (math.floor(alpha * 255.0) * 16777216)
-end
-
-return colors
+return {
+  transparent = palette.transparent,
+  panel = palette.base,
+  surface = palette.surface,
+  border = palette.popup.border,
+  popup = palette.popup.bg,
+  text = palette.text,
+  muted = palette.subtle,
+  lavender = palette.iris,
+  active = palette.foam,
+  hover = palette.blue,
+  clock = palette.blue,
+  battery = palette.gold,
+  warning = palette.red,
+  volume = palette.rose,
+}

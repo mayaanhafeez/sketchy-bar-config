@@ -1,5 +1,9 @@
 #!/usr/bin/env lua
 
--- Load the sketchybar-package and prepare the helper binaries
-require("helpers")
+local home = os.getenv("HOME")
+local config = os.getenv("CONFIG_DIR") or (home .. "/.config/sketchybar")
+package.path = config .. "/?.lua;" .. package.path
+package.cpath = home .. "/.local/share/sketchybar_lua/?.so;" .. package.cpath
+local helpers = "'" .. (config .. "/helpers"):gsub("'", "'\\''") .. "'"
+assert(os.execute("make -C " .. helpers .. " all >/dev/null"), "Could not build SketchyBar helpers")
 require("init")
