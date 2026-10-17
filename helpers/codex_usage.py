@@ -6,6 +6,7 @@ import os
 import sqlite3
 import json
 from collections import defaultdict
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
@@ -168,6 +169,51 @@ def display_model(model):
     return model
 
 
+def token_totals(database, oldest, today):
+    """Count each assistant turn on its local calendar day, across V1 and V2.
+
+    Session totals cannot provide daily usage: resuming a session moves all of
+    its historical tokens to its latest day. Migrated messages can exist in both
+    tables, so prefer the V2 copy when their IDs overlap.
+    """
+    start = int(datetime.combine(oldest, datetime.min.time()).timestamp() * 1000)
+    end = int(datetime.combine(today + timedelta(days=1), datetime.min.time()).timestamp() * 1000)
+    by_day = defaultdict(int)
+    by_model = defaultdict(int)
+    with closing(sqlite3.connect("file:%s?mode=ro" % database, uri=True, timeout=1)) as db:
+        tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        sources = []
+        if "session_message" in tables:
+            sources.append(("session_message", "type = 'assistant'"))
+        if "message" in tables:
+            condition = "json_extract(data, '$.role') = 'assistant'"
+            if "session_message" in tables:
+                condition += " AND NOT EXISTS (SELECT 1 FROM session_message WHERE session_message.id = message.id)"
+            sources.append(("message", condition))
+        if not sources:
+            raise sqlite3.OperationalError("No OpenCode message tables found")
+        for table, condition in sources:
+            rows = db.execute("""
+                SELECT time_created,
+                       COALESCE(json_extract(data, '$.model.id'), json_extract(data, '$.modelID')),
+                       COALESCE(json_extract(data, '$.tokens.input'), 0) +
+                       COALESCE(json_extract(data, '$.tokens.output'), 0) +
+                       COALESCE(json_extract(data, '$.tokens.reasoning'), 0) +
+                       COALESCE(json_extract(data, '$.tokens.cache.read'), 0) +
+                       COALESCE(json_extract(data, '$.tokens.cache.write'), 0)
+                FROM %s
+                WHERE time_created >= ? AND time_created < ? AND %s
+            """ % (table, condition), (start, end))
+            for created, model, tokens in rows:
+                if not tokens:
+                    continue
+                day = datetime.fromtimestamp(created / 1000).date()
+                by_day[day] += tokens
+                if model:
+                    by_model[display_model(model)] += tokens
+    return by_day, by_model
+
+
 def main():
     plan = fetch_plan()
     if plan:
@@ -185,29 +231,8 @@ def main():
 
     today = datetime.now().date()
     oldest = today - timedelta(days=DAYS - 1)
-    by_day = defaultdict(int)
-    by_model = defaultdict(int)
-
     try:
-        # Open read-only so a busy OpenCode instance is never blocked.
-        db = sqlite3.connect("file:%s?mode=ro" % DATABASE, uri=True, timeout=1)
-        rows = db.execute("""
-            SELECT time_updated, model,
-                   tokens_input + tokens_output + tokens_reasoning +
-                   tokens_cache_read + tokens_cache_write
-            FROM session
-            WHERE time_archived IS NULL
-        """)
-        for updated, model, tokens in rows:
-            if not updated or not tokens:
-                continue
-            day = datetime.fromtimestamp(updated / 1000).astimezone().date()
-            if day < oldest or day > today:
-                continue
-            by_day[day] += tokens
-            if model:
-                by_model[display_model(model)] += tokens
-        db.close()
+        by_day, by_model = token_totals(DATABASE, oldest, today)
     except (sqlite3.Error, OSError, OverflowError):
         print("days=0\nmodels=0")
         return
