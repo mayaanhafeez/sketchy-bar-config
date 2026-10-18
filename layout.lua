@@ -257,10 +257,20 @@ local function update_volume(value)
   end
   sbar.exec([[osascript -e 'set v to get volume settings' -e 'return (output volume of v as text) & ":" & (output muted of v as text)']], function(output)
     local percent, muted = output:match("(%d+):(%a+)")
-    if muted == "true" then volume:set({ icon = "", label = "mute" }) else update_volume(percent) end
+    -- Devices without software volume (HDMI/DP) report "missing value"; never
+    -- recurse on a nil percent or this respawns osascript forever.
+    if muted == "true" then volume:set({ icon = "", label = "mute" })
+    elseif percent then update_volume(percent)
+    else volume:set({ label = "--" }) end
   end)
 end
-volume:subscribe("volume_change", function() update_volume() end)
+-- SketchyBar already supplies the effective volume (zero while muted). Don't
+-- spawn another AppleScript read on both layouts for every slider/media-key tick.
+volume:subscribe("volume_change", function(env)
+  local percent = tonumber(env.INFO)
+  -- Zero alone cannot distinguish mute from a silent level; keep the mute label.
+  if percent and percent > 0 then update_volume(percent) else update_volume() end
+end)
 volume:subscribe({ "routine", "system_woke" }, function() update_volume() end)
 volume:subscribe("mouse.scrolled", function(env)
   local delta = (tonumber(env.SCROLL_DELTA) or 0) > 0 and 5 or -5

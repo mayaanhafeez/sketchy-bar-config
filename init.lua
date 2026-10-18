@@ -1,6 +1,7 @@
 local sbar = require("sketchybar")
 local settings = require("settings")
 local create_layout = require("layout")
+local popups = require("popups")
 local config = os.getenv("CONFIG_DIR") or (os.getenv("HOME") .. "/.config/sketchybar")
 local function quote(value) return "'" .. value:gsub("'", "'\\''") .. "'" end
 
@@ -35,12 +36,13 @@ for event, kind in pairs(popup_events) do
   sbar.add("event", event)
   local shortcut = sbar.add("item", "shortcut." .. event, { drawing = false, updates = true })
   shortcut:subscribe(event, function()
+    if kind == "volume" and popups.toggle_volume() then return end
     sbar.exec(quote(config .. "/helpers/displays"), function(displays)
       if type(displays) ~= "table" then return end
       for _, display in ipairs(displays) do
         if display.mouse then
           local layout = display.built_in and laptop or monitor
-          layout.popups[kind]()
+          layout.popups[kind](displays)
           return
         end
       end
@@ -61,6 +63,7 @@ local function update_displays()
     sbar.exec("sketchybar --query displays", function(displays)
       detecting = false
       if type(displays) ~= "table" or #displays == 0 then return end
+      popups.set_displays(displays)
       local monitor_ids, laptop_ids = {}, {}
       for _, display in ipairs(displays) do
         local ids = built_in[display.DirectDisplayID] and laptop_ids or monitor_ids

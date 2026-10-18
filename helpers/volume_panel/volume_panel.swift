@@ -10,11 +10,12 @@
 //   volume_panel [--anchor-x <px>] [--anchor-y <px>] [--width <px>]
 //                [--radius <px>] [--font <family>] [--switcher <path>]
 //                [--stay] [...palette]
+//   --prepare    Build a hidden, reusable window at bar startup.
+//   --toggle     Show/hide that window through a per-user Mach port.
+//   --hide       Hide it without quitting or starting a new host.
 //
-//   --switcher   Path to SwitchAudioSource, used for device enumeration and
-//                switching. Levels and mute go through osascript instead --
-//                that is the only route to the *system* volume, which is what
-//                the hero slider is actually about.
+//   --switcher   Path to SwitchAudioSource, used only when switching devices.
+//                Reads, levels and mute use CoreAudio directly.
 //
 // Colours are "#rrggbb" or "0xaarrggbb", the argb form sketchybar uses:
 //
@@ -45,6 +46,27 @@ struct Options {
     var switcher = "/opt/homebrew/bin/SwitchAudioSource"
     var exitOnBlur = true
     var palette = Palette()
+    var screenAnchors: [UInt32: [Double]] = [:]
+
+    func resolvedAnchor() -> Options {
+        guard !screenAnchors.isEmpty,
+              let screen = NSScreen.screens.first(where: { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }),
+              let id = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value,
+              let anchor = screenAnchors[id] else { return self }
+        var options = self
+        options.displayID = id
+        options.anchorX = anchor[0]
+        options.anchorY = anchor[1]
+        options.width = anchor[2]
+        return options
+    }
+
+    func sameView(as other: Options) -> Bool {
+        width == other.width && radius == other.radius && font == other.font &&
+        palette.foreground == other.palette.foreground && palette.background == other.palette.background &&
+        palette.accent == other.palette.accent && palette.urgent == other.palette.urgent &&
+        palette.muted == other.palette.muted && palette.border == other.palette.border
+    }
 
     static func parse(_ argv: [String]) -> Options {
         var o = Options()
@@ -56,6 +78,15 @@ struct Options {
             case "--anchor-x":   if let v = next, let d = Double(v) { o.anchorX = CGFloat(d); i += 1 }
             case "--anchor-y":   if let v = next, let d = Double(v) { o.anchorY = CGFloat(d); i += 1 }
             case "--display-id": if let v = next, let d = UInt32(v) { o.displayID = d; i += 1 }
+            case "--screen-anchor":
+                if let v = next {
+                    let parts = v.split(separator: ",")
+                    if parts.count == 4, let id = UInt32(parts[0]) {
+                        let anchor = parts.dropFirst().compactMap { Double($0) }
+                        if anchor.count == 3 { o.screenAnchors[id] = anchor }
+                    }
+                    i += 1
+                }
             case "--width":      if let v = next, let d = Double(v) { o.width = CGFloat(d); i += 1 }
             case "--radius":     if let v = next, let d = Double(v) { o.radius = CGFloat(d); i += 1 }
             case "--font":       if let v = next { o.font = v; i += 1 }
@@ -129,16 +160,6 @@ enum T {
 
 // MARK: - model
 
-struct Device: Identifiable, Equatable {
-    var name: String
-    var current: Bool
-    var id: String { name }
-}
-
-enum Channel: String {
-    case output, input
-}
-
 // MARK: - formatting
 
 enum Fmt {
@@ -189,9 +210,8 @@ final class AudioStore: ObservableObject {
     @Published var outputDevices: [Device] = []
     @Published var inputDevices: [Device] = []
 
-    /// macOS reports no input-mute flag through `get volume settings`, so an
-    /// input at zero *is* the muted state, and unmuting restores whatever it
-    /// was before rather than guessing a level.
+    /// Preserve the panel's input-mute behavior: zero silences the input, and
+    /// unmuting restores its previous level. Not all devices have a mute flag.
     @Published private(set) var inputRestore: Double = 0.5
     var inputMuted: Bool { inputVolume <= 0.001 }
 
@@ -199,11 +219,15 @@ final class AudioStore: ObservableObject {
 
     private let opts: Options
     private let work = DispatchQueue(label: "volume_panel.io", qos: .userInitiated)
-    /// Reads get their own queue: a load spawns five processes, and writes
-    /// queued behind it are what made a drag stall every couple of seconds.
+    /// Keep hardware reads off the UI and separate from writes.
     private let reads = DispatchQueue(label: "volume_panel.reads", qos: .utility)
+    private var monitor: AudioMonitor?
+    private var loading = false
+    private var reloadPending = false
+    private var refreshTask: Task<Void, Never>?
+    private var active = false
 
-    /// A drag fires far faster than osascript can keep up, so each channel has
+    /// A drag fires far faster than hardware writes can keep up, so each channel has
     /// at most one write in flight and only the newest level waits behind it.
     private var pendingLevel: [Channel: Int] = [:]
     private var writingLevel: Set<Channel> = []
@@ -212,44 +236,65 @@ final class AudioStore: ObservableObject {
     private var inFlight = 0
     private var changes = 0
 
-    init(opts: Options) { self.opts = opts }
+    init(opts: Options) {
+        self.opts = opts
+    }
+
+    func start() {
+        guard !active else { return }
+        active = true
+        monitor = AudioMonitor { [weak self] in
+            Task { @MainActor in self?.scheduleLoad() }
+        }
+        load()
+    }
+
+    func stop() {
+        active = false
+        monitor = nil
+        refreshTask?.cancel()
+        refreshTask = nil
+    }
 
     // ---------------------------------------------------------------- reads
 
-    func load() {
-        let started = changes
-        reads.async { [weak self] in
+    private func scheduleLoad() {
+        // One hardware change can notify master, virtual and channel controls.
+        // Coalesce that burst rather than re-rendering once per property.
+        guard active, refreshTask == nil else { return }
+        refreshTask = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: .milliseconds(30)) } catch { return }
             guard let self else { return }
-            let settings = Self.osascript("get volume settings") ?? ""
-            let out = Self.field(settings, "output volume")
-            let inp = Self.field(settings, "input volume")
-            let muted = settings.contains("output muted:true")
-            let outDevices = self.devices(.output)
-            let inDevices = self.devices(.input)
-            Task { @MainActor in
-                if self.inFlight == 0 && self.changes == started {
-                    if let out { self.outputVolume = out / 100 }
-                    if let inp { self.inputVolume = inp / 100 }
-                    if let inp, inp > 0 { self.inputRestore = inp / 100 }
-                    self.outputMuted = muted
-                }
-                self.outputDevices = outDevices
-                self.inputDevices = inDevices
-            }
+            self.refreshTask = nil
+            self.load()
         }
     }
 
-    /// `SwitchAudioSource -a` lists names one per line and `-c` names the live
-    /// one; comparing the two is cheaper and steadier than asking for JSON and
-    /// matching ids that change across reboots.
-    nonisolated private func devices(_ channel: Channel) -> [Device] {
-        let all = Self.shell(opts.switcher, ["-a", "-t", channel.rawValue]) ?? ""
-        let current = (Self.shell(opts.switcher, ["-c", "-t", channel.rawValue]) ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return all.split(separator: "\n")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-            .map { Device(name: $0, current: $0 == current) }
+    func load() {
+        guard active else { return }
+        guard !loading else { reloadPending = true; return }
+        loading = true
+        let started = changes
+        reads.async { [weak self] in
+            guard let self else { return }
+            let out = AudioHardware.level(.output)
+            let inp = AudioHardware.level(.input)
+            let muted = AudioHardware.outputMuted()
+            let outDevices = AudioHardware.devices(.output)
+            let inDevices = AudioHardware.devices(.input)
+            Task { @MainActor in
+                if self.inFlight == 0 && self.changes == started {
+                    if let out, out != self.outputVolume { self.outputVolume = out }
+                    if let inp, inp != self.inputVolume { self.inputVolume = inp }
+                    if let inp, inp > 0, inp != self.inputRestore { self.inputRestore = inp }
+                    if muted != self.outputMuted { self.outputMuted = muted }
+                }
+                if outDevices != self.outputDevices { self.outputDevices = outDevices }
+                if inDevices != self.inputDevices { self.inputDevices = inDevices }
+                self.loading = false
+                if self.reloadPending { self.reloadPending = false; self.load() }
+            }
+        }
     }
 
     /// The connected output being headphones changes the hero glyph. There is
@@ -284,7 +329,7 @@ final class AudioStore: ObservableObject {
     func toggleOutputMute() {
         let next = !outputMuted
         outputMuted = next
-        write("set volume \(next ? "with" : "without") output muted")
+        write { AudioHardware.setOutputMuted(next) }
     }
 
     func toggleInputMute() {
@@ -302,7 +347,7 @@ final class AudioStore: ObservableObject {
         } else {
             inputVolume = inputRestore
         }
-        write("set volume \(silence ? "with" : "without") output muted")
+        write { AudioHardware.setOutputMuted(silence) }
         pushLevel(.input, silence ? 0 : Int((inputRestore * 100).rounded()))
     }
 
@@ -321,24 +366,21 @@ final class AudioStore: ObservableObject {
             writingLevel.remove(channel)
             return
         }
-        // One osascript per level; dragging up from zero also lifts the mute.
-        let script = switch channel {
-        case .output: percent > 0
-            ? "set volume output volume \(percent) without output muted"
-            : "set volume output volume 0"
-        case .input: "set volume input volume \(percent)"
-        }
-        write(script) { [weak self] in self?.drainLevel(channel) }
+        write({
+            AudioHardware.setLevel(Double(percent) / 100, on: channel)
+            if channel == .output && percent > 0 { AudioHardware.setOutputMuted(false) }
+        }, then: { [weak self] in self?.drainLevel(channel) })
     }
 
-    private func write(_ script: String, then done: (@MainActor () -> Void)? = nil) {
+    private func write(_ action: @escaping () -> Void, then done: (@MainActor () -> Void)? = nil) {
         changes += 1
         inFlight += 1
         work.async { [weak self] in
-            _ = Self.osascript(script)
+            action()
             Task { @MainActor in
                 self?.inFlight -= 1
                 done?()
+                self?.scheduleLoad()
             }
         }
     }
@@ -346,8 +388,8 @@ final class AudioStore: ObservableObject {
     func select(_ device: Device, on channel: Channel) {
         // Repaint the tick straight away; the reload below confirms it.
         switch channel {
-        case .output: outputDevices = outputDevices.map { Device(name: $0.name, current: $0.name == device.name) }
-        case .input:  inputDevices  = inputDevices.map  { Device(name: $0.name, current: $0.name == device.name) }
+        case .output: outputDevices = outputDevices.map { Device(id: $0.id, name: $0.name, current: $0.id == device.id) }
+        case .input:  inputDevices  = inputDevices.map  { Device(id: $0.id, name: $0.name, current: $0.id == device.id) }
         }
         let switcher = opts.switcher
         let name = device.name
@@ -359,20 +401,6 @@ final class AudioStore: ObservableObject {
     }
 
     // ------------------------------------------------------------- plumbing
-
-    nonisolated private static func field(_ raw: String, _ key: String) -> Double? {
-        // "output volume:56, input volume:51, alert volume:100, output muted:false"
-        for part in raw.split(separator: ",") {
-            let t = part.trimmingCharacters(in: .whitespaces)
-            guard t.hasPrefix(key + ":") else { continue }
-            return Double(t.dropFirst(key.count + 1).trimmingCharacters(in: .whitespaces))
-        }
-        return nil
-    }
-
-    nonisolated private static func osascript(_ script: String) -> String? {
-        shell("/usr/bin/osascript", ["-e", script])
-    }
 
     nonisolated private static func shell(_ path: String, _ args: [String]) -> String? {
         guard FileManager.default.isExecutableFile(atPath: path) else { return nil }
@@ -640,8 +668,6 @@ struct PanelView: View {
     @State private var cursor: Cursor = .slider(.output)
     @State private var cursorActive = false
 
-    private let tick = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
-
     var body: some View {
         VStack(alignment: .leading, spacing: T.xxxl) {
             hero
@@ -659,10 +685,9 @@ struct PanelView: View {
         .padding(T.popupPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(theme.bg)
-        .onAppear { store.load() }
-        // Levels change from the keyboard's own media keys too, so the panel
-        // re-reads rather than assuming it is the only thing driving them.
-        .onReceive(tick) { _ in store.load() }
+        .onAppear { store.start() }
+        // CoreAudio notifications keep media-key and device changes in sync;
+        // no polling or subprocesses while the panel is sitting idle.
         .background(KeyCatcher(onMove: move, onActivate: activate, onClose: onClose))
     }
 
@@ -833,28 +858,72 @@ final class PanelWindow: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
+@MainActor
 final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
-    private let opts: Options
+    private var opts: Options
     private let store: AudioStore
     private var window: PanelWindow?
-    private let previous = NSWorkspace.shared.frontmostApplication
-    private let targetScreen: NSScreen?
+    private var previous: NSRunningApplication?
+    private var targetScreen: NSScreen?
+    private let resident: Bool
+    private let prepare: Bool
+    private var visible = false
+    private var ipc: PanelIPC?
 
-    @MainActor init(opts: Options) {
-        self.opts = opts
-        self.targetScreen = opts.displayID.flatMap { id in
+    @MainActor init(opts: Options, resident: Bool, prepare: Bool) {
+        self.opts = opts.resolvedAnchor()
+        self.resident = resident
+        self.prepare = prepare
+        self.store = AudioStore(opts: opts)
+    }
+
+    private func screen() -> NSScreen? {
+        opts.displayID.flatMap { id in
             NSScreen.screens.first {
                 ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == id
             }
         } ?? NSScreen.screens.first {
             NSMouseInRect(NSEvent.mouseLocation, $0.frame, false)
         } ?? NSScreen.main
-        self.store = AudioStore(opts: opts)
     }
 
     @MainActor func applicationDidFinishLaunching(_ n: Notification) {
+        if resident {
+            ipc = PanelIPC { [weak self] command, arguments in
+                MainActor.assumeIsolated { self?.handle(command, arguments: arguments) }
+            }
+            // A concurrent first click may have started another host already.
+            guard ipc != nil else { NSApp.terminate(nil); return }
+        }
+        buildWindow()
+        if prepare {
+            // Warm CoreAudio and populate/layout the window before the click.
+            // Observations are stopped once the initial read finishes.
+            store.start()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                guard let self, !self.visible else { return }
+                self.window?.contentView?.layoutSubtreeIfNeeded()
+                self.store.stop()
+            }
+        } else { show() }
+    }
+
+    private func handle(_ command: PanelCommand, arguments: [String]) {
+        if command == .hide { close(); return }
+        if command == .toggle && visible { close(); return }
+        let next = Options.parse(arguments).resolvedAnchor()
+        let rebuild = !opts.sameView(as: next)
+        opts = next
+        if rebuild { buildWindow() }
+        if command == .toggle { show() }
+    }
+
+    private func buildWindow() {
+        window?.delegate = nil
+        window?.close()
+        window = nil
         let theme = Theme(palette: opts.palette, font: opts.font, radius: opts.radius)
-        let root = PanelView(store: store, theme: theme) { NSApp.terminate(nil) }
+        let root = PanelView(store: store, theme: theme) { [weak self] in self?.close() }
             .frame(width: opts.width)
 
         let hc = NSHostingController(rootView: AnyView(root))
@@ -871,6 +940,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
         w.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
         w.delegate = self
         w.isMovable = false
+        w.isReleasedWhenClosed = false
 
         if let cv = w.contentView {
             cv.wantsLayer = true
@@ -880,11 +950,34 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
             cv.layer?.borderColor = opts.palette.border.cgColor
         }
 
+        window = w
+        w.contentView?.layoutSubtreeIfNeeded()
+    }
+
+    private func show() {
+        guard let w = window else { return }
+        let front = NSWorkspace.shared.frontmostApplication
+        if front != NSRunningApplication.current { previous = front }
+        targetScreen = screen()
+        visible = true
+        store.start()
         position(w, size: w.frame.size)
         w.makeKeyAndOrderFront(nil)
         w.orderFrontRegardless()
         NSApp.activate(ignoringOtherApps: true)
-        window = w
+    }
+
+    private func close() {
+        guard resident else { NSApp.terminate(nil); return }
+        guard visible else { return }
+        visible = false
+        store.stop()
+        let restore = NSApp.isActive
+        window?.orderOut(nil)
+        if restore {
+            NSApp.deactivate()
+            previous?.activate()
+        }
     }
 
     /// Anchored by its top edge, so a resize has to re-place it or the panel
@@ -901,12 +994,13 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let x = min(max(f.minX + margin, (opts.anchorX ?? f.maxX - margin) - size.width),
                     f.maxX - size.width - margin)
         let y = max(f.minY + margin, f.maxY - (opts.anchorY ?? 32) - size.height)
-        w.setFrameOrigin(NSPoint(x: x, y: y))
+        let origin = NSPoint(x: x, y: y)
+        if w.frame.origin != origin { w.setFrameOrigin(origin) }
     }
 
     func windowDidResignKey(_ n: Notification) {
-        guard opts.exitOnBlur else { return }
-        NSApp.terminate(nil)
+        guard visible, opts.exitOnBlur else { return }
+        close()
     }
 
     func applicationWillTerminate(_ n: Notification) {
@@ -915,9 +1009,20 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 }
 
-let options = Options.parse(Array(CommandLine.arguments.dropFirst()))
-let app = NSApplication.shared
-app.setActivationPolicy(.accessory)
-let controller = MainActor.assumeIsolated { Controller(opts: options) }
-app.delegate = controller
-app.run()
+@main
+enum VolumePanel {
+    @MainActor static func main() {
+        let arguments = Array(CommandLine.arguments.dropFirst())
+        let command: PanelCommand? = arguments.contains("--toggle") ? .toggle :
+            (arguments.contains("--hide") ? .hide : (arguments.contains("--prepare") ? .prepare : nil))
+        if let command, PanelIPC.send(command, arguments: arguments) { return }
+        // Never launch a GUI just to close an absent host.
+        if command == .hide { return }
+        let options = Options.parse(arguments)
+        let app = NSApplication.shared
+        app.setActivationPolicy(.accessory)
+        let controller = Controller(opts: options, resident: command != nil, prepare: command == .prepare)
+        app.delegate = controller
+        app.run()
+    }
+}
