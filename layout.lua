@@ -50,6 +50,15 @@ sbar.default({
   popup = { background = { color = c.panel, corner_radius = 5, border_width = 0 } },
 })
 
+-- Match the side inset to the vertical gap above the pills on each screen.
+local edge = (settings.height - panel_height) / 2
+for _, side in ipairs({ "left", "right" }) do
+  sbar.add("item", "edge." .. side, {
+    position = side, width = edge,
+    icon = { drawing = false }, label = { drawing = false }, background = { drawing = false },
+  })
+end
+
 local spaces, focused, present = {}, "1", {}
 local function paint_spaces()
   for index, item in ipairs(spaces) do
